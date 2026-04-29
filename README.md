@@ -15,7 +15,7 @@ The goal of this project is to build a robust distributed cache that transitions
 ## Possible Improvements at the Moment
 
 - **Implementing using DashMap**: At the moment the cache is locked behind a single `RwLock`. If readers do not pause or execute indefinetly, this means that writes will suffer from starvation. `DashMap` should solve this, as it implements mutliple `RwLocks`.
-- **Improving the get and set return protocols**: The `GET` protocol uses a binary protocol while the `SET` uses a text framing protocol using the `STORED\n` as the return value. They should be unified.
+- **Implementing a trait based implementation of return protocols**: Consider using a Respond trait and a response enum with all possible return types.
 - **Thread Management**: We should implement thread-pooling to reduce the risk of creating multiple OS-level threads that could consume memory when they scale to the thousands. We could also use tokio although it is not considered an `std` library hence falls short of the requirements of the project.
 - **Graceful Shutdown**
 - **Error Handling** - Reducing the use of `unwrap()` to prevent preventable panicking.
@@ -69,21 +69,40 @@ The goal of this project is to build a robust distributed cache that transitions
 Currently, the baseline implementation is located in the `cache` directory.
 
 ```bash
-cd cache
-cargo run
+cargo run --bin cache
 ```
 
 The server listens on `127.0.0.1:7878` by default.
 
+### Running the Test Client
+
+cargo run --bin client
+```
+
 ### Protocol Specification (Phase 1)
 
-| Byte | Field        | Description                        |
-| ---- | ------------ | ---------------------------------- |
-| 0    | Command      | 1 for GET, 2 for SET               |
-| 1-4  | Key Length   | Big-endian u32                     |
-| 5+   | Key          | The raw key bytes                  |
-| +    | Value Length | Big-endian u32 (only for SET)      |
-| +    | Value        | The raw value bytes (only for SET) |
+The server uses a binary protocol over TCP. All multi-byte integers are encoded in **Big-Endian**.
+
+#### Request Format
+| Offset | Field | Size | Description |
+|--------|-------|------|-------------|
+| 0 | Command | 1 byte | `1` for GET, `2` for SET |
+| 1 | Key Length | 4 bytes | Length of the key in bytes (u32) |
+| 5 | Key | N bytes | Raw bytes of the key |
+| 5+N | Value Length* | 4 bytes | Length of the value in bytes (only for SET) |
+| 9+N | Value* | M bytes | Raw bytes of the value (only for SET) |
+
+#### Response Format
+| Offset | Field | Size | Description |
+|--------|-------|------|-------------|
+| 0 | Status | 1 byte | `0x00` (Ok), `0x01` (NotFound), `0xFF` (Err) |
+| 1 | Body Length | 4 bytes | Length of the body in bytes (u32) |
+| 5 | Body | L bytes | Raw bytes of the response body |
+
+#### Status Codes
+- `0x00 (Ok)`: Operation successful. For `GET`, body contains the value. For `SET`, body is empty.
+- `0x01 (NotFound)`: Key does not exist in the cache.
+- `0xFF (Err)`: A server-side or protocol error occurred.
 
 ## Philosophy
 

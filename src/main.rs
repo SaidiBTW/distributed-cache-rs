@@ -18,6 +18,13 @@ enum Command {
     Set = 2,
 }
 
+#[repr(u8)]
+enum Status {
+    Ok = 0x00,
+    NotFound = 0x01,
+    Err = 0xFF,
+}
+
 impl TryFrom<u8> for Command {
     type Error = u8;
 
@@ -30,14 +37,21 @@ impl TryFrom<u8> for Command {
     }
 }
 
-fn handle_client(mut stream: TcpStream, cache: Cache) {
-    loop {
-        //Set a timeout to prevent blocking forever
-        if let Err(e) = stream.set_read_timeout(Some(Duration::from_secs(30))) {
-            eprintln!("Failed to set read timeout");
-            break;
-        }
+fn write_response(stream: &mut TcpStream, status: Status, body: &[u8]) -> io::Result<()> {
+    let body_len = body.len() as u32;
+    let mut buf = Vec::with_capacity(1 + 4 + body.len());
+    buf.push(status as u8);
+    buf.extend_from_slice(&body_len.to_be_bytes());
+    buf.extend_from_slice(body);
+    stream.write_all(&buf)
+}
 
+fn handle_client(mut stream: TcpStream, cache: Cache) {
+    //Set a timeout to prevent blocking forever
+    if let Err(e) = stream.set_read_timeout(Some(Duration::from_secs(30))) {
+        eprintln!("Failed to set read timeout");
+    }
+    loop {
         //Using 1 byte for the commnad and 4 bytes for the key
         let mut header_buf = [0; 5];
 
@@ -96,15 +110,13 @@ fn handle_get(stream: &mut TcpStream, key: &[u8], cache: &Cache) -> Result<(), &
 
     match map.get(key) {
         Some(value) => {
-            let value_len: u32 = value.len().try_into().expect("Value exceed u32 max");
-            let mut response = Vec::with_capacity(4 + value.len());
-            response.extend_from_slice(&value_len.to_be_bytes());
-            response.extend_from_slice(&value);
-            let _ = stream.write_all(&response);
+            let _ = write_response(stream, Status::Ok, value);
+
             Ok(())
         }
         None => {
-            let _ = stream.write_all(&0u32.to_be_bytes());
+            let _ = write_response(stream, Status::NotFound, b"");
+
             Ok(())
         }
     }
@@ -128,7 +140,7 @@ fn handle_set(stream: &mut TcpStream, key: &[u8], cache: &Cache) -> Result<(), &
     //Scoped write lock
     let mut map = cache.write().unwrap();
     map.insert(key.to_vec(), value);
-    let _ = stream.write_all(b"STORED\n");
+    let _ = write_response(stream, Status::Ok, b"");
     Ok(())
 }
 
