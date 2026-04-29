@@ -19,16 +19,17 @@ The goal of this project is to build a robust distributed cache that transitions
 - **Thread Management**: We should implement thread-pooling to reduce the risk of creating multiple OS-level threads that could consume memory when they scale to the thousands. We could also use tokio although it is not considered an `std` library hence falls short of the requirements of the project.
 - **Graceful Shutdown**
 - **Error Handling** - Reducing the use of `unwrap()` to prevent preventable panicking.
+- **Implementing TTL Eviction** - This to prevent OOM exceptions when we store many keys. Should start with LRU.
 
 ## Roadmap & Progress
 
-### 🟢 Phase 1: Baseline (Current)
+### 🟢 Phase 1: Baseline
 
 - **Concurrent Key-Value Store**: Built using `HashMap`, `Arc`, and `RwLock`.
 - **TCP Server**: A multi-threaded TCP server using `std::net::TcpListener` and `std::thread`.
 - **Basic Protocol**: A binary protocol for `GET` and `SET` operations with length-prefixed keys and values.
 
-### 🟡 Phase 2: Custom Memory Arena
+### 🟢 Phase 2: Custom Memory Arena (Current)
 
 - **Efficient Allocation**: Replacing standard `HashMap` allocations with a custom memory arena.
 - **Buffer Management**: Using `Vec<u8>` as a pre-allocated buffer to reduce fragmentation and improve cache locality.
