@@ -77,6 +77,7 @@ The server listens on `127.0.0.1:7878` by default.
 ### Running the Test Client
 
 cargo run --bin client
+
 ```
 
 ### Protocol Specification (Phase 1)
@@ -108,4 +109,7 @@ The server uses a binary protocol over TCP. All multi-byte integers are encoded 
 
 - **No Dependencies**: Where possible, only `std` is used.
 - **Explicit over Implicit**: No magic macros or heavy abstractions.
+- **Performance First**: Prioritizing memory efficiency and low-latency networking.
+```
+
 - **Performance First**: Prioritizing memory efficiency and low-latency networking.
