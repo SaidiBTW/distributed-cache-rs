@@ -7,11 +7,15 @@ use std::{
     time::Duration,
 };
 
-use cache::status::Status;
+use cache::{
+    arena::{Arena, ArenaPtr},
+    cache_store::CacheStore,
+    status::Status,
+};
 
 use cache::command::Command;
 
-type Cache = Arc<RwLock<HashMap<Vec<u8>, Vec<u8>>>>;
+type Cache = Arc<RwLock<CacheStore>>;
 
 const MAX_KEY_SIZE: u32 = 1024; // 1 KB
 const MAX_VALUE_SIZE: u32 = 1024 * 1024; //1MB
@@ -135,14 +139,14 @@ fn handle_set(
 
     //Scoped write lock
     let mut map = cache.write().unwrap();
-    map.insert(key.to_vec(), value);
+    map.set(key.to_vec(), &value).expect("Error OOM");
     let _ = write_response(writer, Status::Ok, b"");
     Ok(())
 }
 
 fn main() {
     let listener = TcpListener::bind("127.0.0.1:7878").unwrap();
-    let cache: Cache = Arc::new(RwLock::new(HashMap::with_capacity(10_000)));
+    let cache: Cache = Arc::new(RwLock::new(CacheStore::new(10_000)));
 
     println!("Cache server listener on port 7878");
 
