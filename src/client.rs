@@ -83,4 +83,15 @@ impl Client {
 
         self.read_response()
     }
+
+    pub fn delete(&mut self, key: &[u8]) -> io::Result<Response> {
+        let key_len = key.len() as u32;
+        self.writer.write_all(&[3u8])?;
+        self.writer.write_all(&key_len.to_be_bytes())?;
+        self.writer.write_all(key)?;
+
+        self.writer.flush()?;
+
+        self.read_response()
+    }
 }

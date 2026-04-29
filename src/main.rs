@@ -69,6 +69,11 @@ fn handle_client(stream: TcpStream, cache: Cache) {
                     break;
                 }
             }
+            Command::Del => {
+                if handle_delete(&mut writer, &key, &cache).is_err() {
+                    break;
+                }
+            }
         };
         if writer.flush().is_err() {
             break;
@@ -101,6 +106,15 @@ fn handle_get(
 
             Ok(())
         }
+    }
+}
+
+fn handle_delete(writer: &mut BufWriter<TcpStream>, key: &[u8], cache: &Cache) -> io::Result<()> {
+    let mut map = cache.write().unwrap();
+
+    match map.delete(key) {
+        true => write_response(writer, Status::Ok, b""),
+        false => write_response(writer, Status::NotFound, b""),
     }
 }
 

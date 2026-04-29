@@ -38,7 +38,6 @@ fn main() {
     }
 
     //For missing key
-
     match client.get(missing_key) {
         Ok(Response::Ok(response)) => println!(
             "Response from server {:#?}",
@@ -50,5 +49,21 @@ fn main() {
             String::from_utf8_lossy(missing_key)
         ),
         Err(err) => println!("Error {:#?}", err),
+    }
+
+    //Delete Existing key
+    match client.delete(key) {
+        Ok(Response::Ok(_)) => println!("Deleted value from server"),
+        Ok(Response::NotFound) => println!("Key not found in server"),
+        Ok(Response::Err(e)) => println!("Error deleting key from server {}", e),
+        Err(e) => eprintln!("Err {:#?}", e),
+    }
+
+    //Delete Non Existing key
+    match client.delete(missing_key) {
+        Ok(Response::Ok(_)) => println!("Deleted key from server"),
+        Ok(Response::NotFound) => println!("Key not found in server"),
+        Ok(Response::Err(e)) => println!("Error deleting key from server {}", e),
+        Err(e) => eprintln!("Err {:#?}", e),
     }
 }

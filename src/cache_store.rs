@@ -40,6 +40,15 @@ impl CacheStore {
             None => None,
         }
     }
+    pub fn delete(&mut self, key: &[u8]) -> bool {
+        //You can safely ignore the Arena during this step
+        //since the compaction process uses only the existing
+        //data in the cache to construct itself
+        match self.cache.remove(key) {
+            Some(_) => true,
+            None => false,
+        }
+    }
 
     //Garbage Collection
     fn compact(&mut self) {

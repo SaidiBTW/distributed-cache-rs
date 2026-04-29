@@ -2,6 +2,7 @@
 pub enum Command {
     Get = 1,
     Set = 2,
+    Del = 3,
 }
 
 impl TryFrom<u8> for Command {
@@ -11,6 +12,7 @@ impl TryFrom<u8> for Command {
         match value {
             1 => Ok(Command::Get),
             2 => Ok(Command::Set),
+            3 => Ok(Command::Del),
             other => Err(other),
         }
     }
