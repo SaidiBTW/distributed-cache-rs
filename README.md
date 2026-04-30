@@ -16,7 +16,6 @@ The goal of this project is to build a robust distributed cache that transitions
 
 - **Implementing using DashMap**: At the moment the cache is locked behind a single `RwLock`. If readers do not pause or execute indefinetly, this means that writes will suffer from starvation. `DashMap` should solve this, as it implements mutliple `RwLocks`.
 - **Implementing a trait based implementation of return protocols**: Consider using a Respond trait and a response enum with all possible return types.
-- **Thread Management**: We should implement thread-pooling to reduce the risk of creating multiple OS-level threads that could consume memory when they scale to the thousands. We could also use tokio although it is not considered an `std` library hence falls short of the requirements of the project.
 - **Graceful Shutdown**
 - **Error Handling** - Reducing the use of `unwrap()` to prevent preventable panicking.
 - **Implementing TTL Eviction** - This to prevent OOM exceptions when we store many keys. Should start with LRU.

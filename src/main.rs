@@ -1,18 +1,11 @@
 use std::{
-    collections::HashMap,
     io::{self, BufReader, BufWriter, Read, Write},
     net::{TcpListener, TcpStream},
     sync::{Arc, RwLock},
-    thread,
     time::Duration,
 };
 
-use cache::{
-    arena::{Arena, ArenaPtr},
-    cache_store::CacheStore,
-    status::Status,
-    thread_pool::ThreadPool,
-};
+use cache::{cache_store::CacheStore, status::Status, thread_pool::ThreadPool};
 
 use cache::command::Command;
 
@@ -167,7 +160,7 @@ fn main() {
 
     println!("Cache server listener on port 7878");
 
-    for stream in listener.incoming().take(2) {
+    for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
                 let cache_ref = Arc::clone(&cache);
@@ -183,6 +176,4 @@ fn main() {
             }
         }
     }
-
-    println!("Shutting down")
 }
