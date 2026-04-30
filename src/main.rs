@@ -11,6 +11,7 @@ use cache::{
     arena::{Arena, ArenaPtr},
     cache_store::CacheStore,
     status::Status,
+    thread_pool::ThreadPool,
 };
 
 use cache::command::Command;
@@ -162,19 +163,26 @@ fn main() {
     let listener = TcpListener::bind("127.0.0.1:7878").unwrap();
     let cache: Cache = Arc::new(RwLock::new(CacheStore::new(10_000)));
 
+    let pool = ThreadPool::new(4);
+
     println!("Cache server listener on port 7878");
 
-    for stream in listener.incoming() {
+    for stream in listener.incoming().take(2) {
         match stream {
             Ok(stream) => {
                 let cache_ref = Arc::clone(&cache);
-                thread::spawn(move || {
+                pool.execute(move || {
                     handle_client(stream, cache_ref);
                 });
+                // thread::spawn(move || {
+                //     handle_client(stream, cache_ref);
+                // });
             }
             Err(e) => {
                 eprintln!("Connection failed: {}", e);
             }
         }
     }
+
+    println!("Shutting down")
 }

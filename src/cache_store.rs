@@ -16,10 +16,10 @@ impl CacheStore {
     }
 
     pub fn set(&mut self, key: Vec<u8>, value: &[u8]) -> Result<(), &'static str> {
-        if self.arena.usage_ration() >= 0.85 {
+        if self.arena.usage_ratio() >= 0.85 {
             self.compact();
 
-            if self.arena.usage_ration() > 0.85 {
+            if self.arena.usage_ratio() > 0.85 {
                 return Err("OOM: Arena full even after compaction");
             }
         }
@@ -65,7 +65,7 @@ impl CacheStore {
         self.arena = new_arena;
         println!(
             "Compaction complete. New usage: {:.2}",
-            self.arena.usage_ration()
+            self.arena.usage_ratio()
         )
     }
 }
@@ -86,13 +86,13 @@ mod tests {
             let val = format!("data_v{:02}", i);
             let res = store.set(b"churn_key".to_vec(), val.as_bytes());
             assert!(res.is_ok(), "Failed at iteration {}", i);
-            println!("{}", store.arena.usage_ration());
+            println!("{}", store.arena.usage_ratio());
         }
 
         assert_eq!(store.get(b"baseline_key").unwrap(), b"baseline_data");
 
         assert_eq!(store.get(b"churn_key").unwrap(), b"data_v09");
 
-        assert!(store.arena.usage_ration() < 0.8, "Memory was not reclaimed");
+        assert!(store.arena.usage_ratio() < 0.8, "Memory was not reclaimed");
     }
 }

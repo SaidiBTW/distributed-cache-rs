@@ -41,7 +41,7 @@ impl Arena {
         &self.memory[ptr.offset..(ptr.offset + ptr.length)]
     }
 
-    pub fn usage_ration(&self) -> f64 {
+    pub fn usage_ratio(&self) -> f64 {
         self.alloc_offset as f64 / self.capacity as f64
     }
 }
