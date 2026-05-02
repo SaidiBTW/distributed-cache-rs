@@ -28,13 +28,13 @@ The goal of this project is to build a robust distributed cache that transitions
 - **TCP Server**: A multi-threaded TCP server using `std::net::TcpListener` and `std::thread`.
 - **Basic Protocol**: A binary protocol for `GET` and `SET` operations with length-prefixed keys and values.
 
-### 🟢 Phase 2: Custom Memory Arena (Current)
+### 🟢 Phase 2: Custom Memory Arena
 
 - **Efficient Allocation**: Replacing standard `HashMap` allocations with a custom memory arena.
 - **Buffer Management**: Using `Vec<u8>` as a pre-allocated buffer to reduce fragmentation and improve cache locality.
 - **Manual Lifetime Management**: Implementing low-level memory layout for cached entries.
 
-### 🔴 Phase 3: Consensus (Raft)
+### 🟡 Phase 3: Consensus (Raft) (Current)
 
 - **Distributed Protocol**: Implementing the Raft Consensus protocol from scratch.
 - **Leader Election**: Handling node failures and ensuring a single leader.
