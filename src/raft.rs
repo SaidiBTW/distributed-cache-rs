@@ -1,0 +1,267 @@
+use core::time;
+use std::{
+    env,
+    io::{Read, Write},
+    net::{TcpListener, TcpStream},
+    sync::{Arc, Condvar, Mutex},
+    thread,
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+};
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum NodeStatus {
+    Follower,
+    Candidate,
+    Leader,
+}
+
+pub struct Node {
+    pub name: &'static str,
+    pub node_ip: String,
+    pub state: NodeStatus,
+    pub voted_for: Option<u32>,
+    pub current_term: u64,
+    pub commit_index: u64,
+    pub timeout: u64,
+    pub leader: Option<String>,
+    pub timer: Arc<(Mutex<TimerState>, Condvar)>,
+}
+
+pub struct Log {
+    logs: Vec<LogEntry>,
+}
+
+#[derive(Debug, Clone)]
+pub struct LogEntry {
+    command: Vec<u8>,
+    index: u64,
+    term: u64,
+}
+
+pub struct Vote;
+
+pub struct VoteRequest {
+    term: u32,
+}
+
+#[repr(u8)]
+enum VoteRequestResult {
+    Accepted = 0x00,
+    Rejected = 0x01,
+    VoteRequestError = 0xFF,
+}
+
+impl TryFrom<u8> for VoteRequestResult {
+    type Error = u8;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            0x00 => Ok(VoteRequestResult::Accepted),
+            0x01 => Ok(VoteRequestResult::Rejected),
+            other => Err(other),
+        }
+    }
+}
+
+struct TimerState {
+    deadline: Instant,
+}
+
+const HEARTBEAT_INTERVAL: u64 = 200;
+
+impl Node {
+    pub fn new(name: &'static str) -> Node {
+        let node_ip = env::var("BASE_URL").expect("Node Base url not set");
+        let timeout = generate_random_number() * 20;
+        let node = Node {
+            name: name,
+            node_ip: node_ip,
+            timeout: timeout,
+            voted_for: None,
+            state: NodeStatus::Follower,
+            commit_index: 0,
+            current_term: 0,
+            leader: None,
+            timer: Arc::new((
+                Mutex::new(TimerState {
+                    deadline: Instant::now() + Duration::from_millis(timeout),
+                }),
+                Condvar::new(),
+            )),
+        };
+
+        // node.setup_timeout(timeout);
+
+        node
+    }
+    pub fn setup_timeout(&self, timeout: u64) {
+        let lock_clone = Arc::clone(&self.timer);
+
+        thread::spawn(move || {
+            let (lock, cvar) = &*lock_clone;
+
+            loop {
+                let state = lock.lock().unwrap();
+                let now = Instant::now();
+
+                if now >= state.deadline {
+                    //Timer timed out naturally should ask for leadership
+                    println!("Timeout finished naturally: Should ask for leadership");
+                    continue;
+                }
+
+                let remaing_time = state.deadline - now;
+                println!("Remaining time, {:?}", remaing_time);
+
+                let _ = cvar.wait_timeout(state, remaing_time).unwrap();
+            }
+        });
+    }
+
+    pub fn refresh_heartbeat(&self) {
+        let timeout = self.timeout;
+
+        let state = Arc::clone(&self.timer);
+        let (lock, cvar) = &*state;
+
+        let mut state = lock.lock().unwrap();
+
+        state.deadline += Duration::from_millis(timeout / 3);
+
+        println!("Refresh timeout");
+
+        cvar.notify_one();
+    }
+    pub fn send_heart_beat(&self) {
+        let node_ip = self.node_ip.clone();
+        let timeout = self.timeout;
+        thread::spawn(move || {
+            //This are the members of nodes in the cluster
+            thread::sleep(Duration::from_millis(timeout));
+            let MEMBERS: Vec<String> = vec![
+                String::from("127.0.0.1:7878"),
+                String::from("127.0.0.1:7879"),
+                String::from("127.0.0.1:7880"),
+            ];
+            loop {
+                thread::sleep(Duration::from_millis(HEARTBEAT_INTERVAL));
+                println!("Sending heartbeat interval");
+                let other_members: Vec<String> = MEMBERS
+                    .clone()
+                    .into_iter()
+                    .filter(|x| *x != node_ip)
+                    .collect();
+                for member in other_members.iter() {
+                    println!("Sending heart_beat to {}", member)
+                }
+            }
+        });
+    }
+
+    pub fn ask_for_leadership(&self) {
+        let node_ip = self.node_ip.clone();
+        //This are the members of nodes in the cluster
+        let MEMBERS: Vec<String> = vec![
+            String::from("127.0.0.1:7878"),
+            String::from("127.0.0.1:7879"),
+            String::from("127.0.0.1:7880"),
+        ];
+        let other_members: Vec<String> = MEMBERS
+            .clone()
+            .into_iter()
+            .filter(|x| *x != node_ip)
+            .collect();
+        // Make a request for being a leader
+    }
+
+    pub fn send_election_vote_request(&mut self) -> Result<(), &'static str> {
+        //Send to other members in the cluster your current term and index
+        let node_ip = self.node_ip.clone();
+        //This are the members of nodes in the cluster
+        let MEMBERS: Vec<String> = vec![
+            String::from("127.0.0.1:7878"),
+            String::from("127.0.0.1:7879"),
+            String::from("127.0.0.1:7880"),
+        ];
+
+        let member_count = MEMBERS.len();
+        let minimum_quota = (member_count / 2) + 1;
+        let other_members: Vec<String> = MEMBERS
+            .clone()
+            .into_iter()
+            .filter(|x| *x != node_ip)
+            .collect();
+
+        let mut positive_voters = 0;
+        for member in other_members {
+            let connection = TcpStream::connect(format!("http://{}", member));
+            if let Err(e) = connection {
+                eprintln!("Error occured when connection to {} : Error {}", member, e);
+                continue;
+            }
+
+            let mut connection = connection.unwrap();
+            let mut write_response: Vec<u8> = vec![];
+            //9 Bytes -> 1 Command, 4 index bytes, 4 term byte
+            write_response.push(7u8);
+            let index = (self.commit_index as u32).to_be_bytes();
+            let term = (self.current_term as u32).to_be_bytes();
+
+            write_response.extend_from_slice(&index);
+            write_response.extend_from_slice(&term);
+
+            connection
+                .write_all(&write_response)
+                .expect("Error making request");
+
+            let mut response_buf = [0; 1];
+
+            connection
+                .read_exact(&mut response_buf)
+                .expect("Error reading result");
+
+            let status = VoteRequestResult::try_from(response_buf[0]);
+
+            match status {
+                Ok(VoteRequestResult::Accepted) => {
+                    positive_voters = positive_voters + 1;
+                }
+                _ => {
+                    continue;
+                }
+            };
+        }
+        if positive_voters >= minimum_quota {
+            self.leader = Some(String::from(node_ip));
+        }
+
+        Ok(())
+    }
+
+    pub fn handle_vote_request(&self, term: u64, index: u64) -> Result<(), &'static str> {
+        if term < self.current_term {
+            self.reject_vote();
+            return Err("You are behind on terms. Node requesting leadership might be outdated.");
+        }
+        if index < self.commit_index {
+            self.reject_vote();
+            return Err("I have a more recent logs compared to you hence I am more updated");
+        }
+
+        self.accept_vote();
+        Ok(())
+    }
+
+    fn reject_vote(&self) {}
+    fn accept_vote(&self) {}
+}
+
+fn generate_random_number() -> u64 {
+    //generate a random number between 150-200 to use for timeouts
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .subsec_nanos();
+
+    150 + (nanos % 51) as u64
+}

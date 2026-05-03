@@ -1,6 +1,24 @@
 use std::collections::HashMap;
 
-use crate::arena::{Arena, ArenaPtr};
+use crate::{
+    arena::{Arena, ArenaPtr},
+    raft::Node,
+};
+pub struct ServerState {
+    pub map: CacheStore,
+    pub node: Node,
+}
+
+impl ServerState {
+    pub fn new(cache_capacity: usize) -> ServerState {
+        ServerState {
+            map: CacheStore::new(cache_capacity),
+            node: Node::new("Node X"),
+        }
+    }
+}
+
+pub type Cache = CacheStore;
 
 pub struct CacheStore {
     cache: HashMap<Vec<u8>, ArenaPtr>,
