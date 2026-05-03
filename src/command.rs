@@ -1,10 +1,11 @@
 #[repr(u8)]
+#[derive(Debug)]
 pub enum Command {
     Get = 1,
     Set = 2,
     Del = 3,
-    Heartbeat = 6,
-    Elect = 7,
+    RequestVote = 4,
+    AppendEntries = 5,
 }
 
 impl TryFrom<u8> for Command {
@@ -15,8 +16,8 @@ impl TryFrom<u8> for Command {
             1 => Ok(Command::Get),
             2 => Ok(Command::Set),
             3 => Ok(Command::Del),
-            6 => Ok(Command::Heartbeat),
-            7 => Ok(Command::Elect),
+            4 => Ok(Command::RequestVote),
+            5 => Ok(Command::AppendEntries),
             other => Err(other),
         }
     }

@@ -13,6 +13,10 @@ fn main() {
     println!("Successfully connected to server");
     // Test the set command;
 
+    client.vote_request();
+
+    return;
+
     match client.set(key, value) {
         Ok(Response::Ok(_)) => println!("Set successful"),
         Ok(Response::Err(error)) => {

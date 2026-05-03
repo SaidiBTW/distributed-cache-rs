@@ -3,9 +3,15 @@ use std::{
     env,
     io::{Read, Write},
     net::{TcpListener, TcpStream},
-    sync::{Arc, Condvar, Mutex},
+    sync::{Arc, Condvar, Mutex, mpsc},
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    vec,
+};
+
+use crate::{
+    event::Event,
+    rpc::{RequestVoteArgs, RequestVoteReply},
 };
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -16,7 +22,7 @@ pub enum NodeStatus {
 }
 
 pub struct Node {
-    pub name: &'static str,
+    pub id: u32,
     pub node_ip: String,
     pub state: NodeStatus,
     pub voted_for: Option<u32>,
@@ -70,11 +76,11 @@ struct TimerState {
 const HEARTBEAT_INTERVAL: u64 = 200;
 
 impl Node {
-    pub fn new(name: &'static str) -> Node {
+    pub fn new(id: u32) -> Node {
         let node_ip = env::var("BASE_URL").expect("Node Base url not set");
         let timeout = generate_random_number() * 20;
         let node = Node {
-            name: name,
+            id: id,
             node_ip: node_ip,
             timeout: timeout,
             voted_for: None,
@@ -94,6 +100,7 @@ impl Node {
 
         node
     }
+
     pub fn setup_timeout(&self, timeout: u64) {
         let lock_clone = Arc::clone(&self.timer);
 
@@ -172,6 +179,35 @@ impl Node {
             .filter(|x| *x != node_ip)
             .collect();
         // Make a request for being a leader
+    }
+
+    pub fn send_request_vote(peer_add: String, args: RequestVoteArgs, tx: mpsc::Sender<Event>) {
+        thread::spawn(move || {
+            let mut connection =
+                TcpStream::connect(&peer_add).expect("Error connection to peer add");
+            connection
+                .set_read_timeout(Some(Duration::from_millis(100)))
+                .unwrap();
+
+            let mut payload = vec![4u8];
+
+            payload.extend_from_slice(&args.to_bytes().unwrap());
+
+            let _ = connection.write_all(&payload);
+
+            let mut response = [0u8; 9];
+
+            connection.read_exact(&mut response).unwrap();
+
+            // let request_vote_args = RequestVoteArgs::from_bytes(&response);
+
+            // tx.send(Event::IncomingRequestVote {
+            //     args: request_vote_args,
+            //     reply_to: tx,
+            // });
+
+            todo!();
+        });
     }
 
     pub fn send_election_vote_request(&mut self) -> Result<(), &'static str> {

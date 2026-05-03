@@ -8,7 +8,7 @@ use std::{
 use cache::raft::Node;
 
 fn main() {
-    let mut node = Node::new("Node A");
+    let mut node = Node::new(0);
     let listener = TcpListener::bind(format!("{}", "127.0.0.1:7878")).unwrap();
 
     loop {

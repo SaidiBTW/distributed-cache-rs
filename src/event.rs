@@ -1,5 +1,7 @@
 use std::{net::TcpStream, sync::mpsc::Sender};
 
+use crate::rpc::RequestVoteArgs;
+
 #[derive(Debug)]
 pub enum Event {
     // Covers SET/GET/DELETE
@@ -13,5 +15,17 @@ pub enum Event {
     ElectionTimeout,
 
     //RequestVote, AppendEntries RPXs
-    RpcMessage(Vec<u8>),
+    IncomingRequestVote {
+        args: RequestVoteArgs,
+        reply_to: Sender<Vec<u8>>,
+    },
+    IncomingAppendEntries {
+        args: (),
+        reply_to: Sender<Vec<u8>>,
+    },
+
+    RpcReply {
+        term: u64,
+        vote_granted: bool,
+    },
 }

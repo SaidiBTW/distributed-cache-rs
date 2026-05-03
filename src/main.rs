@@ -1,6 +1,8 @@
+use core::panic;
 use std::{
     collections::HashMap,
     env,
+    fs::read,
     io::{self, BufReader, BufWriter, Read, Write},
     net::{TcpListener, TcpStream},
     sync::{
@@ -12,11 +14,15 @@ use std::{
 };
 
 use cache::{
-    cache_store::{Cache, CacheStore, ServerState},
     event::Event,
-    raft::{Node, NodeStatus},
+    models::{
+        cache_store::{Cache, CacheStore},
+        server_state::ServerState,
+        thread_pool::ThreadPool,
+    },
+    raft::{Node, NodeStatus, VoteRequest},
+    rpc::RequestVoteArgs,
     status::Status,
-    thread_pool::ThreadPool,
 };
 
 use cache::command::Command;
@@ -24,7 +30,7 @@ use cache::command::Command;
 const MAX_KEY_SIZE: u32 = 1024; // 1 KB
 const MAX_VALUE_SIZE: u32 = 1024 * 1024; //1MB
 
-fn handle_client_event(stream: &TcpStream) {
+fn handle_client_event(stream: &TcpStream, tx: Sender<Event>) {
     //Set a timeout to prevent blocking forever
     if let Err(e) = stream.set_read_timeout(Some(Duration::from_secs(30))) {
         eprintln!("Failed to set read timeout {}", e);
@@ -79,7 +85,10 @@ fn handle_client_event(stream: &TcpStream) {
                     break;
                 }
             }
-            Command::Heartbeat => {
+            Command::RequestVote => {
+                handle_request_vote(&mut writer, &mut reader, tx.clone());
+            }
+            Command::AppendEntries => {
                 todo!()
             }
             _ => {
@@ -92,72 +101,35 @@ fn handle_client_event(stream: &TcpStream) {
     }
 }
 
-// fn handle_client(stream: TcpStream, cache: &mut CacheStore) {
-//     //Set a timeout to prevent blocking forever
-//     if let Err(e) = stream.set_read_timeout(Some(Duration::from_secs(30))) {
-//         eprintln!("Failed to set read timeout {}", e);
-//     }
-//     let write_stream = stream.try_clone().expect("Error creating write stream");
+fn handle_request_vote(
+    writer: &mut BufWriter<TcpStream>,
+    reader: &mut BufReader<TcpStream>,
+    tx: mpsc::Sender<Event>,
+) {
+    println!("Exectuting 1");
+    let mut request = [0u8; 28];
+    reader
+        .read_exact(&mut request)
+        .expect("Failed to read 28 bytes required by Request vote args.");
+    println!("Exectuting 11");
 
-//     let mut reader = BufReader::with_capacity(8192, stream);
-//     let mut writer = BufWriter::with_capacity(8192, write_stream);
-//     loop {
-//         //Using 1 byte for the commnad and 4 bytes for the key
-//         let mut header_buf = [0; 5];
+    let args = RequestVoteArgs::from_bytes(&request);
 
-//         match reader.read_exact(&mut header_buf) {
-//             Ok(_) => {}
-//             Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => {
-//                 //Client disconnected cleanly
-//             }
-//             Err(e) => {
-//                 eprintln!("I/O Error in client connection {}", e);
-//             }
-//         }
+    //Create a channel to get reply from the state machine
+    let (reply_tx, reply_rx) = mpsc::channel();
 
-//         let command = Command::try_from(header_buf[0]).unwrap();
-//         let key_len =
-//             u32::from_be_bytes([header_buf[1], header_buf[2], header_buf[3], header_buf[4]]);
+    println!("Exectuting 111");
+    let _ = tx.send(Event::IncomingRequestVote {
+        args,
+        reply_to: reply_tx,
+    });
+    println!("Locking awaitig response from state machine");
 
-//         if key_len > MAX_KEY_SIZE {
-//             let _ = writer.write_all(b"ERR: key too large");
-//             break;
-//         }
-
-//         let mut key = vec![0u8; key_len as usize];
-
-//         if reader.read_exact(&mut key).is_err() {
-//             break;
-//         }
-
-//         let _ = match command {
-//             Command::Get => {
-//                 if handle_get(&mut writer, &key, &cache).is_err() {
-//                     break;
-//                 }
-//             }
-//             Command::Set => {
-//                 if handle_set(&mut writer, &mut reader, &key, cache).is_err() {
-//                     break;
-//                 }
-//             }
-//             Command::Del => {
-//                 if handle_delete(&mut writer, &key, cache).is_err() {
-//                     break;
-//                 }
-//             }
-//             Command::Heartbeat => {
-//                 todo!()
-//             }
-//             _ => {
-//                 break;
-//             }
-//         };
-//         if writer.flush().is_err() {
-//             break;
-//         }
-//     }
-// }
+    if let Ok(reply_bytes) = reply_rx.recv() {
+        let _ = writer.write(&reply_bytes);
+        println!("Response :{}", String::from_utf8_lossy(&reply_bytes))
+    }
+}
 
 fn handle_get(
     writer: &mut BufWriter<TcpStream>,
@@ -245,7 +217,7 @@ fn main() {
     // Initialize
     println!("Booting Distributed Cache Node...");
 
-    let state = ServerState::new(10 * 1024 * 1024);
+    let state = ServerState::new(10 * 1024 * 1024, 0);
 
     let (sender, receiver) = mpsc::channel();
 
@@ -253,35 +225,49 @@ fn main() {
         run_state_machine(receiver, state);
     });
 
-    let timer_tx = sender.clone();
-    create_election_timer(timer_tx);
+    // let timer_tx = sender.clone();
+    // create_election_timer(timer_tx);
 
     let listener = TcpListener::bind("127.0.0.1:7878").expect("Failed to bind port");
     let pool = ThreadPool::new(4);
 
     for stream in listener.incoming() {
         match stream {
-            Ok(mut stream) => {
+            Ok(stream) => {
                 //Give each worker a clone of the sernder to tal to the state
                 let worker_sender_channel = sender.clone();
-                let mut thread_stream = stream.try_clone().unwrap();
+
                 pool.execute(move || {
-                    // handle_client(stream, cache_ref, &node);
-                    let (reply_tx, reply_rx): (Sender<Vec<u8>>, Receiver<Vec<u8>>) =
-                        mpsc::channel();
-                    // handle_client(thread_stream, &state.map);
+                    let write_stream = stream.try_clone().expect("Error creating write stream");
 
-                    worker_sender_channel
-                        .send(Event::ClientCommand {
-                            stream: thread_stream,
-                            reply_to: reply_tx,
-                        })
-                        .unwrap();
+                    let mut reader = BufReader::with_capacity(8192, stream);
+                    let mut writer = BufWriter::with_capacity(8192, write_stream);
 
-                    if let Ok(response) = reply_rx.recv() {
-                        let _ = stream.write_all(&response);
-                        println!("{:?}", response);
-                    }
+                    let mut command_buf = [0u8; 1];
+
+                    println!("{:?}", command_buf);
+
+                    reader
+                        .read_exact(&mut command_buf)
+                        .expect("Error reading command byte");
+
+                    let command: Command =
+                        Command::try_from(command_buf[0]).expect("Unexpected command");
+
+                    println!("{:?}", command);
+
+                    match command {
+                        Command::Get => {
+                            // handle_get(writer, key)
+                        }
+                        Command::Set => {}
+                        Command::Del => {}
+                        Command::RequestVote => {
+                            handle_request_vote(&mut writer, &mut reader, worker_sender_channel);
+                        }
+                        Command::AppendEntries => {}
+                        _ => panic!("Unexpected value"),
+                    };
                 });
                 // thread::spawn(move || {
                 //     handle_client(stream, cache_ref);
@@ -309,6 +295,18 @@ fn run_state_machine(receiver: mpsc::Receiver<Event>, mut state: ServerState) {
 
                         last_heartbeat = Instant::now();
                         //Request vote RPC
+
+                        let request_vote_args = RequestVoteArgs {
+                            candidate_id: state.node.id,
+                            term: state.node.current_term,
+                            last_log_index: state.node.commit_index as usize,
+                            last_log_term: state.node.current_term,
+                        };
+                        // Node::send_request_vote(
+                        //     String::from("127.0.0.1:7878"),
+                        //     request_vote_args,
+                        //     tx,
+                        // );
                     }
                 } else {
                     println!(
@@ -324,14 +322,27 @@ fn run_state_machine(receiver: mpsc::Receiver<Event>, mut state: ServerState) {
                     todo!()
                 }
             }
-            Event::RpcMessage(items) => {
-                // handing incoming Raft Messages from other nodes
+
+            Event::ClientCommand { stream, reply_to } => todo!(),
+            Event::IncomingRequestVote { args, reply_to } => {
+                println!("{:?}", args);
+                if args.term < state.node.current_term {
+                    let response_buf = vec![0u8];
+                    reply_to.send(response_buf).expect("Client closed");
+                }
+                if args.last_log_index < (state.node.commit_index as usize) {
+                    let response_buf = vec![0u8];
+                    reply_to.send(response_buf).expect("Client closed");
+                }
+
+                //Else we vote
+                state.node.voted_for = Some(args.candidate_id);
+                state.node.current_term = args.term;
+                //we have voted for the candidate
+                println!("voted for {}", args.candidate_id);
             }
-            Event::ClientCommand { stream, reply_to } => {
-                handle_client_event(&stream);
-                reply_to.send([0u8; 9].to_vec()).unwrap();
-                break;
-            }
+            Event::IncomingAppendEntries { args, reply_to } => todo!(),
+            Event::RpcReply { term, vote_granted } => todo!(),
         }
     }
 }

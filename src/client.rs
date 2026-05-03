@@ -3,7 +3,7 @@ use std::{
     net::TcpStream,
 };
 
-use crate::{response::Response, status::Status};
+use crate::{response::Response, rpc::RequestVoteArgs, status::Status};
 
 pub struct Client {
     reader: BufReader<TcpStream>,
@@ -90,6 +90,22 @@ impl Client {
         self.writer.write_all(&key_len.to_be_bytes())?;
         self.writer.write_all(key)?;
 
+        self.writer.flush()?;
+
+        self.read_response()
+    }
+
+    pub fn vote_request(&mut self) -> io::Result<Response> {
+        let args = RequestVoteArgs {
+            candidate_id: 1,
+            last_log_term: 2,
+            term: 3,
+            last_log_index: 5,
+        };
+        self.writer.write_all(&[4u8])?;
+        self.writer.write_all(&args.to_bytes().unwrap())?;
+
+        println!("Buf Length: {}", self.writer.buffer().len());
         self.writer.flush()?;
 
         self.read_response()
