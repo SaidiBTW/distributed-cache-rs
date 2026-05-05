@@ -1,0 +1,3 @@
+BASE_URL=127.0.0.1:7878 NODE_ID=1 cargo run --bin cache
+BASE_URL=127.0.0.1:7879 NODE_ID=2 cargo run --bin cache
+BASE_URL=127.0.0.1:7880 NODE_ID=3 cargo run --bin cache

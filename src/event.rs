@@ -1,6 +1,6 @@
 use std::{net::TcpStream, sync::mpsc::Sender};
 
-use crate::rpc::RequestVoteArgs;
+use crate::rpc::{AppendEntriesArgs, RequestVoteArgs};
 
 #[derive(Debug)]
 pub enum Event {
@@ -9,8 +9,7 @@ pub enum Event {
         stream: TcpStream,
         reply_to: Sender<Vec<u8>>,
     },
-    //Sending heartbeats to followers
-    HeartbeartTick,
+
     //We havent heard from the leader, start and election
     ElectionTimeout,
 
@@ -19,8 +18,9 @@ pub enum Event {
         args: RequestVoteArgs,
         reply_to: Sender<Vec<u8>>,
     },
+    AppendEntries,
     IncomingAppendEntries {
-        args: (),
+        args: AppendEntriesArgs,
         reply_to: Sender<Vec<u8>>,
     },
 

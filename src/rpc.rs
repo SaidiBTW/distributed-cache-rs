@@ -62,6 +62,32 @@ pub struct RequestVoteReply {
     pub vote_granted: bool,
 }
 
+impl RequestVoteReply {
+    pub fn to_bytes(&self) -> Result<Vec<u8>, &'static str> {
+        //1 byte for either accept od reject
+        // 8 bytes for the current term
+
+        let mut bytes_repr = vec![];
+
+        if self.vote_granted {
+            bytes_repr.push(1u8);
+        } else {
+            bytes_repr.push(0u8);
+        };
+
+        bytes_repr.extend_from_slice(&self.term.to_be_bytes());
+        Ok(bytes_repr)
+    }
+
+    pub fn from_bytes(bytes: &[u8; 9]) -> RequestVoteReply {
+        let vote = u8::from_be_bytes(bytes[0..1].try_into().unwrap());
+        let vote_granted = vote == 1;
+        let term = u64::from_be_bytes(bytes[1..9].try_into().unwrap());
+
+        RequestVoteReply { term, vote_granted }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct AppendEntriesArgs {
     pub term: u64,
@@ -72,8 +98,54 @@ pub struct AppendEntriesArgs {
     pub leader_commit: u32,
 }
 
+impl AppendEntriesArgs {
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut bytes_repr = vec![];
+        bytes_repr.extend_from_slice(&self.leader_id.to_be_bytes());
+        bytes_repr.extend_from_slice(&self.term.to_be_bytes());
+        bytes_repr.extend_from_slice(&self.leader_commit.to_be_bytes());
+        bytes_repr.extend_from_slice(&self.prev_log_term.to_be_bytes());
+        bytes_repr.extend_from_slice(&self.prev_log_index.to_be_bytes());
+
+        bytes_repr
+    }
+
+    pub fn from_bytes(bytes: &[u8; 24]) -> AppendEntriesArgs {
+        AppendEntriesArgs {
+            leader_id: u32::from_be_bytes(bytes[0..4].try_into().unwrap()),
+            term: u64::from_be_bytes(bytes[4..12].try_into().unwrap()),
+            leader_commit: u32::from_be_bytes(bytes[12..16].try_into().unwrap()),
+            prev_log_term: u32::from_be_bytes(bytes[16..20].try_into().unwrap()),
+            entries: vec![],
+            prev_log_index: u32::from_be_bytes(bytes[20..24].try_into().unwrap()),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct AppendEntriesReply {
     pub term: u64,
     pub success: bool,
+}
+
+impl AppendEntriesReply {
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut bytes_repr = vec![];
+        if self.success {
+            bytes_repr.push(1u8);
+        } else {
+            bytes_repr.push(0u8);
+        };
+
+        bytes_repr.extend_from_slice(&self.term.to_be_bytes());
+
+        bytes_repr
+    }
+
+    pub fn from_bytes(bytes: &[u8; 9]) -> AppendEntriesReply {
+        let success = u8::from_be_bytes(bytes[0..1].try_into().unwrap()) == 1;
+        let term = u64::from_be_bytes(bytes[1..9].try_into().unwrap());
+
+        AppendEntriesReply { term, success }
+    }
 }

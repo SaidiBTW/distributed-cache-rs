@@ -21,9 +21,11 @@ use cache::{
         thread_pool::ThreadPool,
     },
     raft::{Node, NodeStatus, VoteRequest},
-    rpc::RequestVoteArgs,
+    rpc::{AppendEntriesArgs, AppendEntriesReply, RequestVoteArgs},
     status::Status,
 };
+
+use cache::rpc::RequestVoteReply;
 
 use cache::command::Command;
 
@@ -106,28 +108,26 @@ fn handle_request_vote(
     reader: &mut BufReader<TcpStream>,
     tx: mpsc::Sender<Event>,
 ) {
-    println!("Exectuting 1");
     let mut request = [0u8; 28];
     reader
         .read_exact(&mut request)
         .expect("Failed to read 28 bytes required by Request vote args.");
-    println!("Exectuting 11");
 
     let args = RequestVoteArgs::from_bytes(&request);
 
     //Create a channel to get reply from the state machine
     let (reply_tx, reply_rx) = mpsc::channel();
 
-    println!("Exectuting 111");
     let _ = tx.send(Event::IncomingRequestVote {
         args,
         reply_to: reply_tx,
     });
-    println!("Locking awaitig response from state machine");
+    println!("Locking awaiting response from state machine");
 
     if let Ok(reply_bytes) = reply_rx.recv() {
-        let _ = writer.write(&reply_bytes);
-        println!("Response :{}", String::from_utf8_lossy(&reply_bytes))
+        let reply_bytes: [u8; 9] = reply_bytes.try_into().expect("Error parsing reply");
+        let response = RequestVoteReply::from_bytes(&reply_bytes);
+        let _ = writer.write_all(&reply_bytes);
     }
 }
 
@@ -157,15 +157,10 @@ fn handle_delete(
     key: &[u8],
     // cache: &mut Cache,
 ) -> io::Result<()> {
-    //     match cache.delete(key) {
+    //     match cache.delete(key) {unlo
     //         true => write_response(writer, Status::Ok, b""),
     //         false => write_response(writer, Status::NotFound, b""),
     //     }
-    Ok(())
-}
-
-fn handle_heartbeat(reader: &mut BufReader<TcpStream>, node: &Node) -> io::Result<()> {
-    node.refresh_heartbeat();
     Ok(())
 }
 
@@ -209,32 +204,36 @@ fn handle_set(
     Ok(())
 }
 
-fn init() {
-    let node_ip = String::from(env::var("BASE_URL").expect("Base Ip is not set"));
-}
-
 fn main() {
+    let node_id: u32 = env::var("NODE_ID").unwrap().parse().unwrap();
+    let base_url = env::var("BASE_URL").unwrap();
     // Initialize
     println!("Booting Distributed Cache Node...");
 
-    let state = ServerState::new(10 * 1024 * 1024, 0);
+    let state = ServerState::new(10 * 1024 * 1024, node_id);
 
     let (sender, receiver) = mpsc::channel();
 
+    let (refresh_timer, refresh_timer_receiver) = mpsc::channel();
+
+    let (heart_beat_timer, heart_beat_receiver) = mpsc::channel();
+
     thread::spawn(move || {
-        run_state_machine(receiver, state);
+        run_state_machine(receiver, state, refresh_timer);
     });
 
-    // let timer_tx = sender.clone();
-    // create_election_timer(timer_tx);
+    let timer_tx = sender.clone();
+    let heartbeat_tx = sender.clone();
+    create_election_timer(timer_tx, refresh_timer_receiver);
+    create_heartbeat_timer(heartbeat_tx, heart_beat_receiver);
 
-    let listener = TcpListener::bind("127.0.0.1:7878").expect("Failed to bind port");
+    let listener = TcpListener::bind(base_url).expect("Failed to bind port");
     let pool = ThreadPool::new(4);
 
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
-                //Give each worker a clone of the sernder to tal to the state
+                //Give each worker a clone of the sender to cpmminocate to the state
                 let worker_sender_channel = sender.clone();
 
                 pool.execute(move || {
@@ -245,8 +244,6 @@ fn main() {
 
                     let mut command_buf = [0u8; 1];
 
-                    println!("{:?}", command_buf);
-
                     reader
                         .read_exact(&mut command_buf)
                         .expect("Error reading command byte");
@@ -254,7 +251,7 @@ fn main() {
                     let command: Command =
                         Command::try_from(command_buf[0]).expect("Unexpected command");
 
-                    println!("{:?}", command);
+                    println!("{:?} Command", command);
 
                     match command {
                         Command::Get => {
@@ -265,7 +262,9 @@ fn main() {
                         Command::RequestVote => {
                             handle_request_vote(&mut writer, &mut reader, worker_sender_channel);
                         }
-                        Command::AppendEntries => {}
+                        Command::AppendEntries => {
+                            handle_append_entries(&mut writer, &mut reader, worker_sender_channel);
+                        }
                         _ => panic!("Unexpected value"),
                     };
                 });
@@ -279,95 +278,315 @@ fn main() {
         }
     }
 }
+fn handle_append_entries(
+    writer: &mut BufWriter<TcpStream>,
+    reader: &mut BufReader<TcpStream>,
+    tx: mpsc::Sender<Event>,
+) {
+    let mut append_entries_buf = [0u8; 24];
 
-fn run_state_machine(receiver: mpsc::Receiver<Event>, mut state: ServerState) {
-    let mut last_heartbeat = Instant::now();
-    let mut current_timeout = Duration::from_millis(generate_random_number());
+    reader.read_exact(&mut append_entries_buf);
+
+    let append_entries = AppendEntriesArgs::from_bytes(&append_entries_buf);
+
+    let (append_tx, append_rx) = mpsc::channel();
+
+    tx.send(Event::IncomingAppendEntries {
+        args: append_entries,
+        reply_to: append_tx,
+    })
+    .unwrap();
+
+    if let Ok(value) = append_rx.recv() {
+        let _ = writer.write_all(&value);
+        println!(
+            "Response - for upcoing append entries:{}",
+            String::from_utf8_lossy(&value)
+        );
+    }
+}
+fn run_state_machine(
+    receiver: mpsc::Receiver<Event>,
+    mut state: ServerState,
+    refresh_timer_sender: mpsc::Sender<Event>,
+) {
     while let Ok(event) = receiver.recv() {
-        println!("Received event {:?}", event);
+        // println!("Received event {:?}", event);
         match event {
             Event::ElectionTimeout => {
-                if last_heartbeat.elapsed() >= current_timeout {
-                    if state.node.state != NodeStatus::Leader {
-                        state.node.state = NodeStatus::Candidate;
-                        state.node.current_term += 1;
-                        state.node.voted_for = Some(0);
+                println!("Election timeout");
+                if state.node.state != NodeStatus::Leader {
+                    state.node.state = NodeStatus::Candidate;
+                    state.node.current_term += 1;
+                    state.node.voted_for = Some(0);
 
-                        last_heartbeat = Instant::now();
-                        //Request vote RPC
+                    //Request vote RPC
 
-                        let request_vote_args = RequestVoteArgs {
+                    let request_vote_args = RequestVoteArgs {
+                        candidate_id: state.node.id,
+                        term: state.node.current_term,
+                        last_log_index: state.node.commit_index as usize,
+                        last_log_term: state.node.current_term,
+                    };
+
+                    let node_ip = state.node.node_ip.clone();
+
+                    let peers: Vec<String> = state
+                        .peers
+                        .clone()
+                        .into_iter()
+                        .filter(|x| *x != node_ip)
+                        .collect();
+                    let peerCount = peers.len();
+
+                    let mut error_count = 0;
+                    let quota = (peerCount / 2) + 1;
+                    let mut accepted = 0;
+
+                    for peer in peers.iter() {
+                        let request_vote = RequestVoteArgs {
                             candidate_id: state.node.id,
                             term: state.node.current_term,
                             last_log_index: state.node.commit_index as usize,
                             last_log_term: state.node.current_term,
                         };
-                        // Node::send_request_vote(
-                        //     String::from("127.0.0.1:7878"),
-                        //     request_vote_args,
-                        //     tx,
-                        // );
-                    }
-                } else {
-                    println!(
-                        "The current node state is {:?} and the term is {},",
-                        state.node.state, state.node.current_term
-                    );
-                }
-            }
+                        println!("Connecting to peer, {}", peer);
+                        let stream = TcpStream::connect(peer);
 
-            Event::HeartbeartTick => {
-                if state.node.state == NodeStatus::Leader {
-                    //Broadcase append entries to peers
-                    todo!()
+                        match stream {
+                            Ok(mut stream) => {
+                                let mut write_buf = vec![4u8];
+                                write_buf.extend_from_slice(&request_vote.to_bytes().unwrap());
+
+                                stream.write_all(&mut write_buf).expect("Error writing ");
+
+                                let mut read_buf = [0u8; 9];
+
+                                stream.read_exact(&mut read_buf).unwrap();
+
+                                // let request_response = RequestVoteReply::
+                                let request_response = RequestVoteReply::from_bytes(&read_buf);
+
+                                println!(
+                                    "Response gotten from response buf {:?}",
+                                    request_response
+                                );
+                                if request_response.vote_granted {
+                                    accepted += 1;
+                                }
+                            }
+                            Err(err) => {
+                                error_count += 1;
+                                println!("Error connecting to one of the nodes");
+                            }
+                        }
+                    }
+
+                    if accepted >= (quota) {
+                        println!(
+                            "Node {} should be leader has {} votes in term {} errors {} ",
+                            state.node.id, accepted, request_vote_args.term, error_count
+                        );
+                        state.node.become_leader();
+                    }
+                    // Node::send_request_vote(
+                    //     String::from("127.0.0.1:7878"),
+                    //     request_vote_args,
+                    //     tx,
+                    // );
                 }
             }
 
             Event::ClientCommand { stream, reply_to } => todo!(),
             Event::IncomingRequestVote { args, reply_to } => {
                 println!("{:?}", args);
-                if args.term < state.node.current_term {
-                    let response_buf = vec![0u8];
-                    reply_to.send(response_buf).expect("Client closed");
+                if args.term <= state.node.current_term {
+                    reply_to
+                        .send(
+                            RequestVoteReply {
+                                term: args.term,
+                                vote_granted: false,
+                            }
+                            .to_bytes()
+                            .unwrap(),
+                        )
+                        .expect("Client closed");
                 }
-                if args.last_log_index < (state.node.commit_index as usize) {
-                    let response_buf = vec![0u8];
-                    reply_to.send(response_buf).expect("Client closed");
-                }
+                // if args.last_log_index < (state.node.commit_index as usize) {
+                //     reply_to
+                //         .send(
+                //             RequestVoteReply {
+                //                 term: args.term,
+                //                 vote_granted: false,
+                //             }
+                //             .to_bytes()
+                //             .unwrap(),
+                //         )
+                //         .expect("Client closed");
+                // }
 
                 //Else we vote
                 state.node.voted_for = Some(args.candidate_id);
-                state.node.current_term = args.term;
+                // state.node.current_term = args.term;
                 //we have voted for the candidate
                 println!("voted for {}", args.candidate_id);
+
+                reply_to
+                    .send(
+                        RequestVoteReply {
+                            term: args.term,
+                            vote_granted: true,
+                        }
+                        .to_bytes()
+                        .unwrap(),
+                    )
+                    .unwrap();
             }
-            Event::IncomingAppendEntries { args, reply_to } => todo!(),
+
             Event::RpcReply { term, vote_granted } => todo!(),
+            Event::AppendEntries => {
+                if state.node.state == NodeStatus::Leader {
+                    println!("I am leader sending heartbeart");
+                    let node_ip = state.node.node_ip.clone();
+
+                    let peers: Vec<String> = state
+                        .peers
+                        .clone()
+                        .into_iter()
+                        .filter(|x| *x != node_ip)
+                        .collect();
+
+                    for peer in peers {
+                        println!("Appending entries to {}", peer);
+
+                        let stream = TcpStream::connect(peer);
+
+                        match stream {
+                            Ok(mut stream) => {
+                                let mut write_buf = vec![5u8]; //Append Entries command
+
+                                write_buf.extend_from_slice(
+                                    &AppendEntriesArgs {
+                                        entries: vec![],
+                                        leader_commit: state.node.commit_index as u32,
+                                        leader_id: state.node.id,
+                                        prev_log_index: state.node.commit_index as u32,
+                                        prev_log_term: state.node.current_term as u32,
+                                        term: state.node.current_term,
+                                    }
+                                    .to_bytes(),
+                                );
+
+                                stream.write_all(&write_buf).unwrap();
+
+                                let mut response_buf = [0u8; 9];
+
+                                stream.read_exact(&mut response_buf);
+
+                                let response = AppendEntriesReply::from_bytes(&response_buf);
+
+                                if response.term > state.node.current_term && response.success {
+                                    println!("Has a greater term than me i should follow");
+                                    state.node.state = NodeStatus::Follower;
+                                    state.node.current_term = response.term;
+                                } else {
+                                }
+                            }
+                            Err(_) => {
+                                println!("Should retry")
+                            }
+                        }
+                    }
+                } else {
+                    // Skip event if you are not leader
+                }
+            }
+            Event::IncomingAppendEntries { args, reply_to } => {
+                println!("{:?}", args);
+                if args.term < state.node.current_term {
+                    println!("You are a higher term that the leader reject offer");
+                    reply_to
+                        .send(
+                            AppendEntriesReply {
+                                success: false,
+                                term: state.node.current_term,
+                            }
+                            .to_bytes(),
+                        )
+                        .unwrap();
+                }
+                if args.term > state.node.current_term {
+                    reply_to
+                        .send(
+                            AppendEntriesReply {
+                                success: true,
+                                term: args.term,
+                            }
+                            .to_bytes(),
+                        )
+                        .unwrap();
+                }
+
+                refresh_timer_sender.send(Event::AppendEntries);
+            }
         }
     }
 }
 
-fn create_election_timer(tx: mpsc::Sender<Event>) {
+fn create_heartbeat_timer(tx: mpsc::Sender<Event>, refresh_timer_receiver: mpsc::Receiver<Event>) {
     thread::spawn(move || {
         loop {
-            let timeout = generate_random_number();
+            match refresh_timer_receiver.recv_timeout(Duration::from_millis(500)) {
+                Ok(_) => {
+                    //Interrupt received stop sending hearbeats
+                    break;
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    break;
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    //No interrupt receved continue sending heart beats
+                    tx.send(Event::AppendEntries).unwrap();
+                }
+            };
+        }
+    });
+}
 
-            thread::sleep(Duration::from_millis(timeout));
+fn create_election_timer(tx: mpsc::Sender<Event>, refresh_timer_receiver: mpsc::Receiver<Event>) {
+    thread::spawn(move || {
+        let node_id = env::var("NODE_ID").unwrap();
+        let timeout = generate_random_number();
+        let mut deadline = Instant::now() + Duration::from_millis(timeout);
 
-            println!("Timeout ended sending event");
-            if tx.send(Event::ElectionTimeout).is_err() {
-                break;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+
+            match refresh_timer_receiver.recv_timeout(remaining) {
+                Ok(_) => {
+                    deadline = Instant::now() + Duration::from_millis(timeout);
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    println!("Timeout ended sending event");
+                    if tx.send(Event::ElectionTimeout).is_err() {
+                        break;
+                    }
+                    deadline = Instant::now() + Duration::from_millis(timeout); // reset for next round
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    break;
+                }
             }
         }
     });
 }
 
 fn generate_random_number() -> u64 {
-    //generate a random number between 150-200 to use for timeouts
+    //generate a random number between 1500-2000 to use for timeouts
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos() as u64;
 
-    150 + (nanos % 51) as u64
+    1500 + (nanos % 501) as u64
 }

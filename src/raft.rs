@@ -30,7 +30,6 @@ pub struct Node {
     pub commit_index: u64,
     pub timeout: u64,
     pub leader: Option<String>,
-    pub timer: Arc<(Mutex<TimerState>, Condvar)>,
 }
 
 pub struct Log {
@@ -88,12 +87,6 @@ impl Node {
             commit_index: 0,
             current_term: 0,
             leader: None,
-            timer: Arc::new((
-                Mutex::new(TimerState {
-                    deadline: Instant::now() + Duration::from_millis(timeout),
-                }),
-                Condvar::new(),
-            )),
         };
 
         // node.setup_timeout(timeout);
@@ -101,44 +94,6 @@ impl Node {
         node
     }
 
-    pub fn setup_timeout(&self, timeout: u64) {
-        let lock_clone = Arc::clone(&self.timer);
-
-        thread::spawn(move || {
-            let (lock, cvar) = &*lock_clone;
-
-            loop {
-                let state = lock.lock().unwrap();
-                let now = Instant::now();
-
-                if now >= state.deadline {
-                    //Timer timed out naturally should ask for leadership
-                    println!("Timeout finished naturally: Should ask for leadership");
-                    continue;
-                }
-
-                let remaing_time = state.deadline - now;
-                println!("Remaining time, {:?}", remaing_time);
-
-                let _ = cvar.wait_timeout(state, remaing_time).unwrap();
-            }
-        });
-    }
-
-    pub fn refresh_heartbeat(&self) {
-        let timeout = self.timeout;
-
-        let state = Arc::clone(&self.timer);
-        let (lock, cvar) = &*state;
-
-        let mut state = lock.lock().unwrap();
-
-        state.deadline += Duration::from_millis(timeout / 3);
-
-        println!("Refresh timeout");
-
-        cvar.notify_one();
-    }
     pub fn send_heart_beat(&self) {
         let node_ip = self.node_ip.clone();
         let timeout = self.timeout;
@@ -208,6 +163,11 @@ impl Node {
 
             todo!();
         });
+    }
+
+    pub fn become_leader(&mut self) {
+        self.voted_for = Some(self.id);
+        self.state = NodeStatus::Leader;
     }
 
     pub fn send_election_vote_request(&mut self) -> Result<(), &'static str> {
@@ -293,11 +253,11 @@ impl Node {
 }
 
 fn generate_random_number() -> u64 {
-    //generate a random number between 150-200 to use for timeouts
+    //generate a random number between 1500-2000 to use for timeouts
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .subsec_nanos();
 
-    150 + (nanos % 51) as u64
+    1500 + (nanos % 501) as u64
 }
