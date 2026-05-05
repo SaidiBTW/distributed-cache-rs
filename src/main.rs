@@ -314,8 +314,8 @@ fn run_state_machine(
         // println!("Received event {:?}", event);
         match event {
             Event::ElectionTimeout => {
-                println!("Election timeout");
                 if state.node.state != NodeStatus::Leader {
+                    println!("Election timeout");
                     state.node.state = NodeStatus::Candidate;
                     state.node.current_term += 1;
                     state.node.voted_for = Some(0);
@@ -567,7 +567,6 @@ fn create_election_timer(tx: mpsc::Sender<Event>, refresh_timer_receiver: mpsc::
                     deadline = Instant::now() + Duration::from_millis(timeout);
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {
-                    println!("Timeout ended sending event");
                     if tx.send(Event::ElectionTimeout).is_err() {
                         break;
                     }
