@@ -6,7 +6,7 @@ use crate::rpc::{AppendEntriesArgs, RequestVoteArgs};
 pub enum Event {
     // Covers SET/GET/DELETE
     ClientCommand {
-        stream: TcpStream,
+        command: Vec<u8>,
         reply_to: Sender<Vec<u8>>,
     },
 

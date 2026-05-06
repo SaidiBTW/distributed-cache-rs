@@ -25,20 +25,31 @@ pub enum NodeStatus {
 pub struct Node {
     pub id: u32,
     pub node_ip: String,
-    pub state: NodeStatus,
+    pub node_status: NodeStatus,
     pub voted_for: Option<u32>,
     pub current_term: u64,
     pub commit_index: u64,
-    pub timeout: u64,
     pub leader: Option<String>,
+    pub log: Log,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Log {
-    entries: Vec<LogEntry>,
+    pub entries: Vec<LogEntry>,
 }
 
 impl Log {
+    pub fn new() -> Log {
+        Log {
+            entries: Vec::with_capacity(20),
+        }
+    }
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+    pub fn add_entry(&mut self, entry: LogEntry) {
+        self.entries.push(entry);
+    }
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut bytes_repr = vec![];
 
@@ -51,6 +62,8 @@ impl Log {
             bytes_repr.extend_from_slice(&entry.to_bytes());
         }
 
+        println!("Log to bytes has {}", bytes_repr.len());
+
         bytes_repr
     }
 
@@ -60,28 +73,37 @@ impl Log {
         let mut pointer: usize = 4; //accounting for log len
         println!("Byte len {}", bytes.len());
         println!("Log len {}", log_len);
-        for iter in 0..log_len as usize {
-            let command_len = u32::from_be_bytes(bytes[pointer..(pointer + 4)].try_into().unwrap());
-            println!("Command Len {command_len}");
-            let end_of_command: usize =
-                (pointer + 8 + 4 + command_len as usize).try_into().unwrap(); // term + command_len + command
-            println!("End of command is at index {end_of_command}");
 
-            let log_entry = LogEntry::from_bytes(bytes[pointer..end_of_command].to_vec());
-            entries.push(log_entry);
-            pointer = end_of_command;
-            println!("Pointer after {} iter", iter);
+        if log_len > 0 {
+            for iter in 0..log_len as usize {
+                let command_len =
+                    u32::from_be_bytes(bytes[pointer..(pointer + 4)].try_into().unwrap());
+                println!("Command Len {command_len}");
+                let end_of_command: usize =
+                    (pointer + 8 + 4 + command_len as usize).try_into().unwrap(); // term + command_len + command
+                println!("End of command is at index {end_of_command}");
+
+                let log_entry = LogEntry::from_bytes(bytes[pointer..end_of_command].to_vec());
+                entries.push(log_entry);
+                pointer = end_of_command;
+                println!("Pointer after {} iter", iter);
+            }
         }
 
         Log { entries }
+    }
+
+    pub fn append_to_entries(&mut self, entries: Vec<LogEntry>) {
+        self.entries.extend_from_slice(&entries);
+
+        println!("Extending entries to len {:?}", self.entries);
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct LogEntry {
-    command_len: u32,
     pub command: Vec<u8>,
-    term: u64,
+    pub term: u64,
 }
 
 impl LogEntry {
@@ -94,22 +116,20 @@ impl LogEntry {
         bytes_repr.extend_from_slice(&command_len);
         bytes_repr.extend_from_slice(&term);
         bytes_repr.extend_from_slice(&self.command);
+        println!("{:?}", self);
+        println!("Command len : {:?}", self.command.len());
+
+        println!("Log entry is repr by {} bytes", bytes_repr.len());
 
         bytes_repr
     }
 
     pub fn from_bytes(bytes: Vec<u8>) -> LogEntry {
-        let command_len: u32 = u32::from_be_bytes(bytes[0..4].try_into().unwrap());
-
         let term: u64 = u64::from_be_bytes(bytes[4..12].try_into().unwrap());
 
         let command = bytes[12..bytes.len()].try_into().unwrap();
 
-        LogEntry {
-            command,
-            term,
-            command_len,
-        }
+        LogEntry { command, term }
     }
 }
 
@@ -151,43 +171,17 @@ impl Node {
         let node = Node {
             id: id,
             node_ip: node_ip,
-            timeout: timeout,
             voted_for: None,
-            state: NodeStatus::Follower,
+            node_status: NodeStatus::Follower,
             commit_index: 0,
             current_term: 0,
             leader: None,
+            log: Log::new(),
         };
 
         // node.setup_timeout(timeout);
 
         node
-    }
-
-    pub fn send_heart_beat(&self) {
-        let node_ip = self.node_ip.clone();
-        let timeout = self.timeout;
-        thread::spawn(move || {
-            //This are the members of nodes in the cluster
-            thread::sleep(Duration::from_millis(timeout));
-            let MEMBERS: Vec<String> = vec![
-                String::from("127.0.0.1:7878"),
-                String::from("127.0.0.1:7879"),
-                String::from("127.0.0.1:7880"),
-            ];
-            loop {
-                thread::sleep(Duration::from_millis(HEARTBEAT_INTERVAL));
-                println!("Sending heartbeat interval");
-                let other_members: Vec<String> = MEMBERS
-                    .clone()
-                    .into_iter()
-                    .filter(|x| *x != node_ip)
-                    .collect();
-                for member in other_members.iter() {
-                    println!("Sending heart_beat to {}", member)
-                }
-            }
-        });
     }
 
     pub fn ask_for_leadership(&self) {
@@ -237,7 +231,7 @@ impl Node {
 
     pub fn become_leader(&mut self) {
         self.voted_for = Some(self.id);
-        self.state = NodeStatus::Leader;
+        self.node_status = NodeStatus::Leader;
     }
 
     pub fn send_election_vote_request(&mut self) -> Result<(), &'static str> {
@@ -335,23 +329,18 @@ fn generate_random_number() -> u64 {
 #[cfg(test)]
 pub mod tests {
 
+    use crate::rpc::AppendEntriesArgs;
+
     use super::*;
 
     #[test]
     pub fn test_log_serialization() {
         let log = Log {
-            entries: vec![
-                LogEntry {
-                    command: vec![1u8],
-                    command_len: 1,
-                    term: 1,
-                },
-                LogEntry {
-                    command: vec![2u8, 4u8, 5u8],
-                    command_len: 5,
-                    term: 2,
-                },
-            ],
+            entries: vec![LogEntry {
+                command: vec![1u8],
+
+                term: 3,
+            }],
         };
 
         let log_bytes = log.to_bytes();
@@ -368,7 +357,6 @@ pub mod tests {
     #[test]
     pub fn test_log_entry_serialization() {
         let log_entry = LogEntry {
-            command_len: 2,
             command: vec![2u8, 4u8],
             term: 1,
         };
@@ -383,5 +371,34 @@ pub mod tests {
             log_entry.command.len(),
             log_entry_deserialized.command.len()
         );
+    }
+
+    #[test]
+    pub fn test_append_entries_serialization() {
+        let mut log = Log::new();
+        log.add_entry(LogEntry {
+            command: vec![0u8],
+            term: 3,
+        });
+        let append_entries = AppendEntriesArgs {
+            leader_commit: 0,
+            term: 1,
+            leader_id: 1,
+            prev_log_index: 0,
+            prev_log_term: 0,
+            log: log,
+        };
+
+        println!("Log serialized {:?}", append_entries);
+
+        let bytes_repr = append_entries.to_bytes();
+
+        println!("Bytes len {}", bytes_repr.len());
+
+        let append_entries_deserialized = AppendEntriesArgs::from_bytes(bytes_repr);
+
+        println!("Log deserialized {:?}", append_entries_deserialized);
+
+        assert!(true)
     }
 }

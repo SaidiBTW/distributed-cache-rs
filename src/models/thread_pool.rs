@@ -26,8 +26,6 @@ impl Worker {
 
                 match message {
                     Message::NewJob(job) => {
-                        println!("Worker {} got a req", id);
-
                         job.call_box();
                     }
                     Message::Terminate => {

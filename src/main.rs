@@ -3,7 +3,7 @@ use std::{
     collections::HashMap,
     env,
     fs::read,
-    io::{self, BufReader, BufWriter, Read, Write},
+    io::{self, BufReader, BufWriter, ErrorKind, Read, Write},
     net::{TcpListener, TcpStream},
     sync::{
         Arc, RwLock,
@@ -20,7 +20,7 @@ use cache::{
         server_state::ServerState,
         thread_pool::ThreadPool,
     },
-    raft::{Node, NodeStatus, VoteRequest},
+    raft::{LogEntry, Node, NodeStatus, VoteRequest},
     rpc::{AppendEntriesArgs, AppendEntriesReply, RequestVoteArgs},
     status::Status,
 };
@@ -32,76 +32,76 @@ use cache::command::Command;
 const MAX_KEY_SIZE: u32 = 1024; // 1 KB
 const MAX_VALUE_SIZE: u32 = 1024 * 1024; //1MB
 
-fn handle_client_event(stream: &TcpStream, tx: Sender<Event>) {
-    //Set a timeout to prevent blocking forever
-    if let Err(e) = stream.set_read_timeout(Some(Duration::from_secs(30))) {
-        eprintln!("Failed to set read timeout {}", e);
-    }
-    let read_stream = stream.try_clone().expect("Error creating read stream");
-    let write_stream = stream.try_clone().expect("Error creating write stream");
+// fn handle_client_event(stream: &TcpStream, tx: Sender<Event>) {
+//     //Set a timeout to prevent blocking forever
+//     if let Err(e) = stream.set_read_timeout(Some(Duration::from_secs(30))) {
+//         eprintln!("Failed to set read timeout {}", e);
+//     }
+//     let read_stream = stream.try_clone().expect("Error creating read stream");
+//     let write_stream = stream.try_clone().expect("Error creating write stream");
 
-    let mut reader = BufReader::with_capacity(8192, read_stream);
-    let mut writer = BufWriter::with_capacity(8192, write_stream);
-    loop {
-        //Using 1 byte for the commnad and 4 bytes for the key
-        let mut header_buf = [0; 5];
+//     let mut reader = BufReader::with_capacity(8192, read_stream);
+//     let mut writer = BufWriter::with_capacity(8192, write_stream);
+//     loop {
+//         //Using 1 byte for the commnad and 4 bytes for the key
+//         let mut header_buf = [0; 5];
 
-        match reader.read_exact(&mut header_buf) {
-            Ok(_) => {}
-            Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => {
-                //Client disconnected cleanly
-            }
-            Err(e) => {
-                eprintln!("I/O Error in client connection {}", e);
-            }
-        }
+//         match reader.read_exact(&mut header_buf) {
+//             Ok(_) => {}
+//             Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => {
+//                 //Client disconnected cleanly
+//             }
+//             Err(e) => {
+//                 eprintln!("I/O Error in client connection {}", e);
+//             }
+//         }
 
-        let command = Command::try_from(header_buf[0]).unwrap();
-        let key_len =
-            u32::from_be_bytes([header_buf[1], header_buf[2], header_buf[3], header_buf[4]]);
+//         let command = Command::try_from(header_buf[0]).unwrap();
+//         let key_len =
+//             u32::from_be_bytes([header_buf[1], header_buf[2], header_buf[3], header_buf[4]]);
 
-        if key_len > MAX_KEY_SIZE {
-            let _ = writer.write_all(b"ERR: key too large");
-            break;
-        }
+//         if key_len > MAX_KEY_SIZE {
+//             let _ = writer.write_all(b"ERR: key too large");
+//             break;
+//         }
 
-        let mut key = vec![0u8; key_len as usize];
+//         let mut key = vec![0u8; key_len as usize];
 
-        if reader.read_exact(&mut key).is_err() {
-            break;
-        }
+//         if reader.read_exact(&mut key).is_err() {
+//             break;
+//         }
 
-        let _ = match command {
-            Command::Get => {
-                if handle_get(&mut writer, &key).is_err() {
-                    break;
-                }
-            }
-            Command::Set => {
-                if handle_set(&mut writer, &mut reader, &key).is_err() {
-                    break;
-                }
-            }
-            Command::Del => {
-                if handle_delete(&mut writer, &key).is_err() {
-                    break;
-                }
-            }
-            Command::RequestVote => {
-                handle_request_vote(&mut writer, &mut reader, tx.clone());
-            }
-            Command::AppendEntries => {
-                todo!()
-            }
-            _ => {
-                break;
-            }
-        };
-        if writer.flush().is_err() {
-            break;
-        }
-    }
-}
+//         let _ = match command {
+//             Command::Get => {
+//                 if handle_get(&mut writer, &key).is_err() {
+//                     break;
+//                 }
+//             }
+//             Command::Set => {
+//                 if handle_set(&mut writer, &mut reader, &key).is_err() {
+//                     break;
+//                 }
+//             }
+//             Command::Del => {
+//                 if handle_delete(&mut writer, &key).is_err() {
+//                     break;
+//                 }
+//             }
+//             Command::RequestVote => {
+//                 handle_request_vote(&mut writer, &mut reader, tx.clone());
+//             }
+//             Command::AppendEntries => {
+//                 todo!()
+//             }
+//             _ => {
+//                 break;
+//             }
+//         };
+//         if writer.flush().is_err() {
+//             break;
+//         }
+//     }
+// }
 
 fn handle_request_vote(
     writer: &mut BufWriter<TcpStream>,
@@ -129,27 +129,6 @@ fn handle_request_vote(
         let response = RequestVoteReply::from_bytes(&reply_bytes);
         let _ = writer.write_all(&reply_bytes);
     }
-}
-
-fn handle_get(
-    writer: &mut BufWriter<TcpStream>,
-    key: &[u8],
-    // cache: &Cache,
-) -> Result<(), &'static str> {
-    write_response(writer, Status::Ok, b"value");
-    Ok(())
-    // match cache.get(key) {
-    //     Some(value) => {
-    //         let _ = write_response(writer, Status::Ok, value);
-
-    //         Ok(())
-    //     }
-    //     None => {
-    //         let _ = write_response(writer, Status::NotFound, b"");
-
-    //         Ok(())
-    //     }
-    // }
 }
 
 fn handle_delete(
@@ -256,9 +235,152 @@ fn main() {
                     match command {
                         Command::Get => {
                             // handle_get(writer, key)
+                            //Using 1 byte for the commnad and 4 bytes for the key
+                            let mut header_buf = [0; 4];
+                            reader
+                                .read_exact(&mut header_buf)
+                                .expect("Error reading header");
+                            let key_len = u32::from_be_bytes([
+                                header_buf[0],
+                                header_buf[1],
+                                header_buf[2],
+                                header_buf[3],
+                            ]);
+
+                            if key_len > MAX_KEY_SIZE {
+                                let _ = writer.write_all(b"ERR: key too large");
+                                return;
+                            }
+
+                            let mut key = vec![0u8; key_len as usize];
+
+                            if reader.read_exact(&mut key).is_err() {
+                                return;
+                            }
+                            let (command_tx, command_rx) = mpsc::channel();
+                            let mut command_vec = vec![];
+                            command_vec.push(1u8);
+                            command_vec.extend_from_slice(&key_len.to_be_bytes());
+                            command_vec.extend_from_slice(&key);
+
+                            println!("Sent Command to state machine");
+
+                            worker_sender_channel
+                                .send(Event::ClientCommand {
+                                    command: command_vec,
+                                    reply_to: command_tx,
+                                })
+                                .unwrap();
+
+                            if let Ok(value) = command_rx.recv() {
+                                println!("Response {:?}", String::from_utf8_lossy(&value))
+                            }
                         }
-                        Command::Set => {}
-                        Command::Del => {}
+                        Command::Set => {
+                            //Using 1 byte for the commnad and 4 bytes for the key
+                            let mut header_buf = [0; 4];
+
+                            match reader.read_exact(&mut header_buf) {
+                                Ok(_) => {}
+                                Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => {
+                                    //Client disconnected cleanly
+                                }
+                                Err(e) => {
+                                    eprintln!("I/O Error in client connection {}", e);
+                                }
+                            }
+                            let key_len = u32::from_be_bytes([
+                                header_buf[0],
+                                header_buf[1],
+                                header_buf[2],
+                                header_buf[3],
+                            ]);
+
+                            if key_len > MAX_KEY_SIZE {
+                                let _ = writer.write_all(b"ERR: key too large");
+                                return;
+                            }
+
+                            let mut key = vec![0u8; key_len as usize];
+
+                            if reader.read_exact(&mut key).is_err() {
+                                return;
+                            }
+                            let mut val_header = [0u8; 4];
+                            if reader.read_exact(&mut val_header).is_err() {
+                                return;
+                            }
+
+                            let value_len = u32::from_be_bytes(val_header);
+                            if value_len > MAX_VALUE_SIZE {
+                                return;
+                            }
+
+                            let mut value = vec![0u8; value_len as usize];
+                            if reader.read_exact(&mut value).is_err() {
+                                return;
+                            }
+
+                            let (command_tx, command_rx) = mpsc::channel();
+                            let mut command_vec = vec![];
+                            command_vec.push(2u8);
+                            command_vec.extend_from_slice(&key_len.to_be_bytes());
+                            command_vec.extend_from_slice(&key);
+                            command_vec.extend_from_slice(&value_len.to_be_bytes());
+                            command_vec.extend_from_slice(&value);
+
+                            worker_sender_channel
+                                .send(Event::ClientCommand {
+                                    command: command_vec,
+                                    reply_to: command_tx,
+                                })
+                                .unwrap();
+
+                            if let Ok(value) = command_rx.recv() {
+                                println!("Response {:?}", String::from_utf8_lossy(&value))
+                            }
+                        }
+                        Command::Del => {
+                            // handle_get(writer, key)
+                            //Using 1 byte for the commnad and 4 bytes for the key
+                            let mut header_buf = [0; 4];
+                            reader
+                                .read_exact(&mut header_buf)
+                                .expect("Error reading header");
+                            let key_len = u32::from_be_bytes([
+                                header_buf[0],
+                                header_buf[1],
+                                header_buf[2],
+                                header_buf[3],
+                            ]);
+
+                            if key_len > MAX_KEY_SIZE {
+                                let _ = writer.write_all(b"ERR: key too large");
+                                return;
+                            }
+
+                            let mut key = vec![0u8; key_len as usize];
+
+                            if reader.read_exact(&mut key).is_err() {
+                                return;
+                            }
+                            let (command_tx, command_rx) = mpsc::channel();
+                            let mut command_vec = vec![];
+                            command_vec.push(3u8);
+                            command_vec.extend_from_slice(&key_len.to_be_bytes());
+                            command_vec.extend_from_slice(&key);
+
+                            worker_sender_channel
+                                .send(Event::ClientCommand {
+                                    command: command_vec,
+                                    reply_to: command_tx,
+                                })
+                                .unwrap();
+
+                            if let Ok(value) = command_rx.recv() {
+                                println!("Response {:?}", String::from_utf8_lossy(&value))
+                            }
+                        }
                         Command::RequestVote => {
                             handle_request_vote(&mut writer, &mut reader, worker_sender_channel);
                         }
@@ -283,11 +405,44 @@ fn handle_append_entries(
     reader: &mut BufReader<TcpStream>,
     tx: mpsc::Sender<Event>,
 ) {
-    let mut append_entries_buf = [0u8; 24];
+    let mut append_entries_repr = vec![];
 
-    reader.read_exact(&mut append_entries_buf);
+    let mut append_entries_buf = [0u8; 24]; // This is prelog
 
-    let append_entries = AppendEntriesArgs::from_bytes(&append_entries_buf);
+    reader.read_exact(&mut append_entries_buf).unwrap();
+    let mut logs_len = [0u8; 4];
+
+    reader.read_exact(&mut logs_len).unwrap();
+
+    let logs_len = u32::from_be_bytes(logs_len);
+
+    println!("Log len is {logs_len}");
+
+    append_entries_repr.extend_from_slice(&append_entries_buf);
+    append_entries_repr.extend_from_slice(&logs_len.to_be_bytes());
+
+    for log_item in 0..logs_len {
+        let mut commands_len = [0u8; 4];
+        reader.read_exact(&mut commands_len);
+
+        append_entries_repr.extend_from_slice(&commands_len);
+        let commands_len = u32::from_be_bytes(commands_len);
+
+        let mut term = [0u8; 8];
+        reader.read_exact(&mut term);
+        append_entries_repr.extend_from_slice(&term);
+
+        let term = u64::from_be_bytes(term);
+
+        let mut commands = vec![0u8; commands_len as usize];
+
+        reader.read_exact(&mut commands);
+        append_entries_repr.extend_from_slice(&commands);
+    }
+
+    println!("Append Entries is {} bytes", append_entries_repr.len());
+
+    let append_entries = AppendEntriesArgs::from_bytes(append_entries_repr.try_into().unwrap());
 
     let (append_tx, append_rx) = mpsc::channel();
 
@@ -299,10 +454,10 @@ fn handle_append_entries(
 
     if let Ok(value) = append_rx.recv() {
         let _ = writer.write_all(&value);
-        println!(
-            "Response - for upcoing append entries:{}",
-            String::from_utf8_lossy(&value)
-        );
+        // println!(
+        //     "Response - for upcoming append entries:{:?}",
+        //     AppendEntriesReply::from_bytes(&value.try_into().unwrap())
+        // );
     }
 }
 fn run_state_machine(
@@ -314,9 +469,9 @@ fn run_state_machine(
         // println!("Received event {:?}", event);
         match event {
             Event::ElectionTimeout => {
-                if state.node.state != NodeStatus::Leader {
+                if state.node.node_status != NodeStatus::Leader {
                     println!("Election timeout");
-                    state.node.state = NodeStatus::Candidate;
+                    state.node.node_status = NodeStatus::Candidate;
                     state.node.current_term += 1;
                     state.node.voted_for = Some(0);
 
@@ -397,7 +552,6 @@ fn run_state_machine(
                 }
             }
 
-            Event::ClientCommand { stream, reply_to } => todo!(),
             Event::IncomingRequestVote { args, reply_to } => {
                 println!("{:?}", args);
                 if args.term <= state.node.current_term {
@@ -445,8 +599,7 @@ fn run_state_machine(
 
             Event::RpcReply { term, vote_granted } => todo!(),
             Event::AppendEntries => {
-                if state.node.state == NodeStatus::Leader {
-                    println!("I am leader sending heartbeart");
+                if state.node.node_status == NodeStatus::Leader {
                     let node_ip = state.node.node_ip.clone();
 
                     let peers: Vec<String> = state
@@ -457,77 +610,136 @@ fn run_state_machine(
                         .collect();
 
                     for peer in peers {
-                        println!("Appending entries to {}", peer);
-
-                        let stream = TcpStream::connect(peer);
-
-                        match stream {
-                            Ok(mut stream) => {
-                                let mut write_buf = vec![5u8]; //Append Entries command
-
-                                write_buf.extend_from_slice(
-                                    &AppendEntriesArgs {
-                                        entries: vec![],
-                                        leader_commit: state.node.commit_index as u32,
-                                        leader_id: state.node.id,
-                                        prev_log_index: state.node.commit_index as u32,
-                                        prev_log_term: state.node.current_term as u32,
-                                        term: state.node.current_term,
-                                    }
-                                    .to_bytes(),
-                                );
-
-                                stream.write_all(&write_buf).unwrap();
-
-                                let mut response_buf = [0u8; 9];
-
-                                stream.read_exact(&mut response_buf);
-
-                                let response = AppendEntriesReply::from_bytes(&response_buf);
-
-                                if response.term > state.node.current_term && response.success {
-                                    println!("Has a greater term than me i should follow");
-                                    state.node.state = NodeStatus::Follower;
-                                    state.node.current_term = response.term;
-                                } else {
-                                }
-                            }
-                            Err(_) => {
-                                println!("Should retry")
-                            }
-                        }
+                        let initial_append_entries = AppendEntriesArgs {
+                            log: state.node.log.clone(),
+                            leader_commit: state.node.commit_index as u32,
+                            leader_id: state.node.id,
+                            prev_log_index: state.node.commit_index as u32,
+                            prev_log_term: state.node.current_term as u32,
+                            term: state.node.current_term,
+                        };
+                        try_append_entries(&peer, initial_append_entries).unwrap();
                     }
                 } else {
                     // Skip event if you are not leader
                 }
             }
             Event::IncomingAppendEntries { args, reply_to } => {
-                println!("{:?}", args);
                 if args.term < state.node.current_term {
-                    println!("You are a higher term that the leader reject offer");
+                    println!(
+                        "You are a higher term that the leader. This is a ghost leader so reject"
+                    );
                     reply_to
                         .send(
                             AppendEntriesReply {
                                 success: false,
-                                term: state.node.current_term,
+                                conflict_term: None,
+                                conflict_index: args.prev_log_index as u64,
                             }
                             .to_bytes(),
                         )
                         .unwrap();
-                }
-                if args.term > state.node.current_term {
-                    reply_to
-                        .send(
-                            AppendEntriesReply {
-                                success: true,
-                                term: args.term,
-                            }
-                            .to_bytes(),
-                        )
-                        .unwrap();
+                    continue;
                 }
 
-                refresh_timer_sender.send(Event::AppendEntries);
+                state.node.current_term = args.term;
+                state.node.node_status = NodeStatus::Follower;
+
+                refresh_timer_sender.send(Event::AppendEntries).unwrap();
+
+                if args.prev_log_index > 0 {
+                    if state.node.log.len() < args.prev_log_index as usize {
+                        println!("Shorter than leader, retry with other params {:?}", args);
+                        reply_to
+                            .send(
+                                AppendEntriesReply {
+                                    success: false,
+                                    conflict_index: state.node.log.len() as u64,
+                                    conflict_term: None,
+                                }
+                                .to_bytes(),
+                            )
+                            .unwrap();
+                        continue;
+                    }
+
+                    if state.node.log.entries[args.prev_log_index as usize].term != args.term {
+                        println!("Term mismatch with leader, retry with other params");
+                        reply_to
+                            .send(
+                                AppendEntriesReply {
+                                    success: false,
+                                    conflict_term: Some(
+                                        state.node.log.entries[args.prev_log_index as usize].term,
+                                    ),
+                                    conflict_index: state
+                                        .node
+                                        .log
+                                        .entries
+                                        .iter()
+                                        .position(|x| {
+                                            x.term
+                                                == state.node.log.entries
+                                                    [args.prev_log_index as usize]
+                                                    .term
+                                        })
+                                        .expect("Invalid Index")
+                                        as u64,
+                                }
+                                .to_bytes(),
+                            )
+                            .unwrap();
+                        continue;
+                    }
+                }
+
+                let mut current_idx = args.prev_log_index as usize;
+                let entries = &mut state.node.log.entries;
+
+                for new_entry in &args.log.entries {
+                    current_idx += 1;
+
+                    if current_idx <= entries.len() {
+                        if entries[current_idx].term != new_entry.term {
+                            //conflict truncate from this point
+                            entries.truncate(current_idx);
+                            entries.push(new_entry.clone());
+                        } else {
+                            entries.push(new_entry.clone());
+                        }
+                    }
+                }
+
+                if args.leader_commit > state.node.commit_index as u32 {
+                    let new_entry_idx = args.prev_log_index as usize + args.log.len();
+                    state.node.commit_index =
+                        std::cmp::min(args.leader_commit as u64, new_entry_idx as u64);
+                }
+                println!("New state: {:?}", args);
+
+                reply_to
+                    .send(
+                        AppendEntriesReply {
+                            success: true,
+                            conflict_term: None,
+                            conflict_index: args.leader_commit as u64,
+                        }
+                        .to_bytes(),
+                    )
+                    .unwrap();
+            }
+            Event::ClientCommand { command, reply_to } => {
+                if state.node.node_status != NodeStatus::Leader {
+                    println!("Cant accept requests as i am not reader should redirect");
+                    continue;
+                }
+
+                state.node.log.add_entry(LogEntry {
+                    command: command,
+                    term: state.node.current_term,
+                });
+                state.node.commit_index += 1;
+                reply_to.send(b"OK".to_vec()).unwrap()
             }
         }
     }
@@ -588,4 +800,48 @@ fn generate_random_number() -> u64 {
         .as_nanos() as u64;
 
     1500 + (nanos % 501) as u64
+}
+fn try_append_entries(peer: &str, args: AppendEntriesArgs) -> Result<(), &'static str> {
+    let stream = TcpStream::connect(peer);
+
+    match stream {
+        Ok(mut stream) => {
+            let mut write_buf = vec![5u8];
+
+            write_buf.extend_from_slice(&args.to_bytes());
+
+            stream.write_all(&write_buf).unwrap();
+
+            let mut response_buf = [0u8; 18];
+
+            stream.read_exact(&mut response_buf);
+
+            let response = AppendEntriesReply::from_bytes(response_buf.try_into().unwrap());
+
+            if response.success {
+                println!("Completed sync");
+                return Ok(());
+            } else {
+                println!("Retrying with new args");
+                return try_append_entries(
+                    peer,
+                    AppendEntriesArgs {
+                        term: args.term,
+                        leader_id: args.leader_id,
+                        prev_log_index: response.conflict_index as u32,
+                        prev_log_term: response.conflict_term.is_some() as u32,
+                        log: args.log,
+                        leader_commit: args.leader_commit,
+                    },
+                );
+            }
+        }
+        Err(e) if e.kind() == ErrorKind::TimedOut => {
+            println!("Should retry");
+        }
+        Err(e) => {
+            println!("Another error")
+        }
+    }
+    Ok(())
 }

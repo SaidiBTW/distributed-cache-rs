@@ -1,4 +1,4 @@
-use crate::raft::LogEntry;
+use crate::raft::{Log, LogEntry};
 
 pub enum RaftRpc {
     RequestVote {},
@@ -88,13 +88,13 @@ impl RequestVoteReply {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct AppendEntriesArgs {
     pub term: u64,
     pub leader_id: u32,
     pub prev_log_index: u32,
     pub prev_log_term: u32,
-    pub entries: Vec<LogEntry>,
+    pub log: Log,
     pub leader_commit: u32,
 }
 
@@ -106,17 +106,20 @@ impl AppendEntriesArgs {
         bytes_repr.extend_from_slice(&self.leader_commit.to_be_bytes());
         bytes_repr.extend_from_slice(&self.prev_log_term.to_be_bytes());
         bytes_repr.extend_from_slice(&self.prev_log_index.to_be_bytes());
+        bytes_repr.extend_from_slice(&self.log.to_bytes());
 
         bytes_repr
     }
 
-    pub fn from_bytes(bytes: &[u8; 24]) -> AppendEntriesArgs {
+    pub fn from_bytes(bytes: Vec<u8>) -> AppendEntriesArgs {
+        println!("From bytes has {}. len", bytes.len());
         AppendEntriesArgs {
             leader_id: u32::from_be_bytes(bytes[0..4].try_into().unwrap()),
             term: u64::from_be_bytes(bytes[4..12].try_into().unwrap()),
             leader_commit: u32::from_be_bytes(bytes[12..16].try_into().unwrap()),
             prev_log_term: u32::from_be_bytes(bytes[16..20].try_into().unwrap()),
-            entries: vec![],
+            log: Log::from_bytes(bytes[24..].try_into().unwrap()),
+            // log: Log::new(),
             prev_log_index: u32::from_be_bytes(bytes[20..24].try_into().unwrap()),
         }
     }
@@ -124,7 +127,8 @@ impl AppendEntriesArgs {
 
 #[derive(Debug, Clone)]
 pub struct AppendEntriesReply {
-    pub term: u64,
+    pub conflict_index: u64,
+    pub conflict_term: Option<u64>,
     pub success: bool,
 }
 
@@ -137,15 +141,76 @@ impl AppendEntriesReply {
             bytes_repr.push(0u8);
         };
 
-        bytes_repr.extend_from_slice(&self.term.to_be_bytes());
+        match self.conflict_term {
+            Some(term) => {
+                bytes_repr.push(1u8);
+                bytes_repr.extend_from_slice(&term.to_be_bytes());
+            }
+            None => bytes_repr.push(0u8),
+        }
+
+        bytes_repr.extend_from_slice(&self.conflict_index.to_be_bytes());
 
         bytes_repr
     }
 
-    pub fn from_bytes(bytes: &[u8; 9]) -> AppendEntriesReply {
-        let success = u8::from_be_bytes(bytes[0..1].try_into().unwrap()) == 1;
-        let term = u64::from_be_bytes(bytes[1..9].try_into().unwrap());
+    pub fn from_bytes(bytes: Vec<u8>) -> AppendEntriesReply {
+        let mut cursor: usize = 0;
+        //get success bit
+        cursor += 1;
+        let success = u8::from_be_bytes(bytes[0..cursor].try_into().unwrap()) == 1;
 
-        AppendEntriesReply { term, success }
+        let conflict_option_existence_bit =
+            u8::from_be_bytes(bytes[cursor..cursor + 1].try_into().unwrap());
+        cursor += 1;
+        let conflict_term = match conflict_option_existence_bit {
+            0 => {
+                cursor += 1;
+                None
+            }
+            1 => {
+                if cursor + 8 > bytes.len() {
+                    panic!("Unexpected EOF")
+                }
+                let term = u64::from_be_bytes(bytes[cursor..cursor + 8].try_into().unwrap());
+
+                cursor += 8;
+
+                Some(term)
+            }
+            _ => panic!("invalid option tag"),
+        };
+
+        let conflict_index = u64::from_be_bytes(bytes[cursor..cursor + 8].try_into().unwrap());
+
+        AppendEntriesReply {
+            conflict_index,
+            conflict_term,
+            success,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    pub fn test_append_entries_reply() {
+        let append_entries_reply = AppendEntriesReply {
+            success: true,
+            conflict_index: 2,
+            conflict_term: Some(20),
+        };
+
+        assert!(append_entries_reply.to_bytes().len() == 18);
+
+        let repr = append_entries_reply.to_bytes();
+
+        let append_entries_deserial = AppendEntriesReply::from_bytes(repr);
+
+        println!("Reply {:?}", append_entries_deserial);
+
+        assert!(true);
     }
 }
