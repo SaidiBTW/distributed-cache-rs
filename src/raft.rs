@@ -10,6 +10,7 @@ use std::{
 };
 
 use crate::{
+    command,
     event::Event,
     rpc::{RequestVoteArgs, RequestVoteReply},
 };
@@ -32,15 +33,84 @@ pub struct Node {
     pub leader: Option<String>,
 }
 
+#[derive(Debug)]
 pub struct Log {
-    logs: Vec<LogEntry>,
+    entries: Vec<LogEntry>,
+}
+
+impl Log {
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut bytes_repr = vec![];
+
+        let log_len = self.entries.len() as u32;
+        let log_len = log_len.to_be_bytes();
+
+        bytes_repr.extend_from_slice(&log_len);
+
+        for entry in &self.entries {
+            bytes_repr.extend_from_slice(&entry.to_bytes());
+        }
+
+        bytes_repr
+    }
+
+    pub fn from_bytes(bytes: Vec<u8>) -> Log {
+        let mut entries = vec![];
+        let log_len = u32::from_be_bytes(bytes[0..4].try_into().unwrap());
+        let mut pointer: usize = 4; //accounting for log len
+        println!("Byte len {}", bytes.len());
+        println!("Log len {}", log_len);
+        for iter in 0..log_len as usize {
+            let command_len = u32::from_be_bytes(bytes[pointer..(pointer + 4)].try_into().unwrap());
+            println!("Command Len {command_len}");
+            let end_of_command: usize =
+                (pointer + 8 + 4 + command_len as usize).try_into().unwrap(); // term + command_len + command
+            println!("End of command is at index {end_of_command}");
+
+            let log_entry = LogEntry::from_bytes(bytes[pointer..end_of_command].to_vec());
+            entries.push(log_entry);
+            pointer = end_of_command;
+            println!("Pointer after {} iter", iter);
+        }
+
+        Log { entries }
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct LogEntry {
-    command: Vec<u8>,
-    index: u64,
+    command_len: u32,
+    pub command: Vec<u8>,
     term: u64,
+}
+
+impl LogEntry {
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let term = self.term.to_be_bytes();
+        let command_len = (self.command.len() as u32).to_be_bytes();
+
+        let mut bytes_repr = vec![];
+
+        bytes_repr.extend_from_slice(&command_len);
+        bytes_repr.extend_from_slice(&term);
+        bytes_repr.extend_from_slice(&self.command);
+
+        bytes_repr
+    }
+
+    pub fn from_bytes(bytes: Vec<u8>) -> LogEntry {
+        let command_len: u32 = u32::from_be_bytes(bytes[0..4].try_into().unwrap());
+
+        let term: u64 = u64::from_be_bytes(bytes[4..12].try_into().unwrap());
+
+        let command = bytes[12..bytes.len()].try_into().unwrap();
+
+        LogEntry {
+            command,
+            term,
+            command_len,
+        }
+    }
 }
 
 pub struct Vote;
@@ -260,4 +330,58 @@ fn generate_random_number() -> u64 {
         .subsec_nanos();
 
     1500 + (nanos % 501) as u64
+}
+
+#[cfg(test)]
+pub mod tests {
+
+    use super::*;
+
+    #[test]
+    pub fn test_log_serialization() {
+        let log = Log {
+            entries: vec![
+                LogEntry {
+                    command: vec![1u8],
+                    command_len: 1,
+                    term: 1,
+                },
+                LogEntry {
+                    command: vec![2u8, 4u8, 5u8],
+                    command_len: 5,
+                    term: 2,
+                },
+            ],
+        };
+
+        let log_bytes = log.to_bytes();
+
+        println!("Log bytes in len {}", log_bytes.len());
+
+        let log_deserialized = Log::from_bytes(log_bytes);
+
+        println!("Log deserialized {:?}", log_deserialized);
+
+        assert_eq!(log.entries.len(), log_deserialized.entries.len());
+    }
+
+    #[test]
+    pub fn test_log_entry_serialization() {
+        let log_entry = LogEntry {
+            command_len: 2,
+            command: vec![2u8, 4u8],
+            term: 1,
+        };
+
+        let bytes = log_entry.to_bytes();
+
+        let log_entry_deserialized = LogEntry::from_bytes(bytes);
+
+        println!("{:?}", log_entry_deserialized);
+
+        assert_eq!(
+            log_entry.command.len(),
+            log_entry_deserialized.command.len()
+        );
+    }
 }
